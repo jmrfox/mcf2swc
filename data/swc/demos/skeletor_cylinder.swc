@@ -1,0 +1,10 @@
+# SWC format file
+# based on specifications at http://www.neuronland.org/NLMorphologyConverter/MorphologyFormats/SWC/Spec.html
+# Created on 2025-09-04 using skeletor (https://github.com/navis-org/skeletor)
+# PointNo Label X Y Z Radius Parent
+# Labels:
+# 0 = undefined, 1 = soma, 5 = fork point, 6 = end point
+0 0 -4.619397662556434 -1.9134171618254483 50.0 0.0 -1
+1 0 -3.338093094884382 -1.7968969947381843 10.0 48.06632335475961 0
+2 0 0.3900946504164823 0.0518470878251098 31.25 31.008477136802476 1
+3 6 1.2556957275262184 0.8390290608595516 -50.0 4.686337141032864 2

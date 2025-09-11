@@ -1,0 +1,151 @@
+{
+  "mesh": "TS1_wrapped",
+  "mesh_path": "C:\\Users\\MainUser\\Documents\\GitHub\\discos\\data\\mesh\\processed\\TS1_wrapped.obj",
+  "n": 16,
+  "results": [
+    {
+      "n_slices": 3,
+      "ok": true,
+      "msg": "",
+      "nodes": 7,
+      "edges": 10,
+      "components": 1,
+      "has_power2": false
+    },
+    {
+      "n_slices": 4,
+      "ok": true,
+      "msg": "",
+      "nodes": 15,
+      "edges": 22,
+      "components": 3,
+      "has_power2": true
+    },
+    {
+      "n_slices": 5,
+      "ok": true,
+      "msg": "",
+      "nodes": 11,
+      "edges": 18,
+      "components": 1,
+      "has_power2": false
+    },
+    {
+      "n_slices": 6,
+      "ok": true,
+      "msg": "",
+      "nodes": 16,
+      "edges": 16,
+      "components": 3,
+      "has_power2": false
+    },
+    {
+      "n_slices": 7,
+      "ok": true,
+      "msg": "",
+      "nodes": 17,
+      "edges": 27,
+      "components": 1,
+      "has_power2": false
+    },
+    {
+      "n_slices": 8,
+      "ok": true,
+      "msg": "",
+      "nodes": 25,
+      "edges": 43,
+      "components": 3,
+      "has_power2": true
+    },
+    {
+      "n_slices": 9,
+      "ok": true,
+      "msg": "",
+      "nodes": 19,
+      "edges": 28,
+      "components": 1,
+      "has_power2": false
+    },
+    {
+      "n_slices": 10,
+      "ok": true,
+      "msg": "",
+      "nodes": 24,
+      "edges": 32,
+      "components": 5,
+      "has_power2": false
+    },
+    {
+      "n_slices": 12,
+      "ok": true,
+      "msg": "",
+      "nodes": 33,
+      "edges": 37,
+      "components": 5,
+      "has_power2": false
+    },
+    {
+      "n_slices": 14,
+      "ok": true,
+      "msg": "",
+      "nodes": 31,
+      "edges": 24,
+      "components": 11,
+      "has_power2": false
+    },
+    {
+      "n_slices": 16,
+      "ok": true,
+      "msg": "",
+      "nodes": 39,
+      "edges": 46,
+      "components": 5,
+      "has_power2": true
+    },
+    {
+      "n_slices": 18,
+      "ok": true,
+      "msg": "",
+      "nodes": 44,
+      "edges": 51,
+      "components": 5,
+      "has_power2": false
+    },
+    {
+      "n_slices": 20,
+      "ok": true,
+      "msg": "",
+      "nodes": 46,
+      "edges": 47,
+      "components": 6,
+      "has_power2": false
+    },
+    {
+      "n_slices": 24,
+      "ok": true,
+      "msg": "",
+      "nodes": 58,
+      "edges": 63,
+      "components": 7,
+      "has_power2": false
+    },
+    {
+      "n_slices": 28,
+      "ok": true,
+      "msg": "",
+      "nodes": 65,
+      "edges": 56,
+      "components": 15,
+      "has_power2": false
+    },
+    {
+      "n_slices": 32,
+      "ok": true,
+      "msg": "",
+      "nodes": 71,
+      "edges": 66,
+      "components": 11,
+      "has_power2": true
+    }
+  ]
+}
