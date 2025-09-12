@@ -39,6 +39,7 @@ from .trace import (  # noqa: E402
     trace_polylines_to_swc,
 )
 from .object3d import Object3D, Transform  # noqa: E402
+from .viz import show_swc  # noqa: E402
 
 __all__ = [
     "__version__",
@@ -57,4 +58,6 @@ __all__ = [
     "TraceOptions",
     "build_traced_skeleton_graph",
     "trace_polylines_to_swc",
+    # Visualization
+    "show_swc",
 ]
