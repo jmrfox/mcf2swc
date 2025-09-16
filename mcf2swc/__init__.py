@@ -25,7 +25,7 @@ except PackageNotFoundError:  # pragma: no cover - best-effort in dev
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 # Re-export primary classes and functions for convenient access at package level
-from .mesh import MeshManager  # noqa: E402
+from .mesh import MeshManager, example_mesh  # noqa: E402
 from .polylines import PolylinesSkeleton  # noqa: E402
 from .skeleton import Junction, SkeletonGraph  # noqa: E402
 from .trace import (  # noqa: E402
@@ -38,6 +38,7 @@ __all__ = [
     "__version__",
     # Mesh and polylines
     "MeshManager",
+    "example_mesh",
     "PolylinesSkeleton",
     # Skeleton types
     "SkeletonGraph",

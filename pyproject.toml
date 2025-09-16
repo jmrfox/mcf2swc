@@ -14,6 +14,7 @@ dependencies = [
     "numpy>=2.3.3",
     "pandas>=2.3.2",
     "plotly>=6.3.0",
+    "pytest>=8.4.2",
     "pyvista[jupyter]>=0.46.3",
     "scipy>=1.16.1",
     "shapely>=2.1.1",

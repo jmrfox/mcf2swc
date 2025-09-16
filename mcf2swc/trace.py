@@ -11,18 +11,13 @@ High level:
     * equivalent_area:    r = sqrt(A / pi)
     * equivalent_perimeter: r = L / (2*pi), using the exterior boundary length
 - Create a SkeletonGraph with:
-    - one node per sample with center at P (exact polyline coordinate) and the
-      fitted radius; area stored for diagnostics
+    - one node per sample at position P (xyz, the exact polyline coordinate) with the
+      fitted radius
     - edges connecting consecutive samples along each polyline
-- Export SWC using SkeletonGraph.to_swc. By default, cycles are broken using the
-  "duplicate_junction" strategy (duplicate a branching node and rewire one
-  incident cycle edge to the duplicate) so the SWC remains a single tree while
-  preserving all modeled connections.
 
 Notes:
 - This module intentionally does not change connectivity beyond linking samples
-  along each polyline. If polylines contain cycles, SWC export will break cycles
-  according to the selected mode (remove one edge or duplicate a junction).
+  along each polyline.
 - Coordinates are taken directly from the polylines (no snapping by default).
   An optional snap-to-mesh pass is provided via PolylinesSkeleton if desired.
 """
@@ -38,7 +33,6 @@ import numpy as np
 import shapely.geometry as sgeom
 import trimesh
 
-from .mesh import MeshManager
 from .polylines import PolylinesSkeleton
 from .skeleton import SkeletonGraph
 
@@ -55,9 +49,8 @@ class TraceOptions:
      Configuration options for polyline-guided tracing and local radius estimation.
 
      These options control how input polylines are sampled, how local
-     cross-sections are probed and selected, how radii are estimated from those
-     sections (or from the surface directly), and how cycles are handled during
-     SWC export.
+     cross-sections are probed and selected, and how radii are estimated from those
+     sections (or from the surface directly).
 
      Attributes:
          spacing: Sampling step along polylines in mesh units. Resampling keeps
@@ -70,10 +63,6 @@ class TraceOptions:
              - "section_circle_fit": algebraic circle fit (Kåsa) to the section boundary.
              - "nearest_surface": distance from the sample point to nearest mesh surface
                (bypasses sectioning entirely, useful as a robust fallback).
-         annotate_cycles: Whether to annotate cycle-breaking operations in SWC headers.
-         cycle_mode: When exporting SWC, how to break cycles: "duplicate_junction" or
-             "remove_edge". The default preserves all segments by duplicating a branching
-             node and rewiring one incident cycle edge.
          section_probe_eps: Step size (scaled by mesh bbox) for offsetting the section
              plane origin along the local normal when the exact plane yields no curves.
          section_probe_tries: Number of +/- k*eps offsets to try when seeking a section.
@@ -81,14 +70,9 @@ class TraceOptions:
              tracing. Useful when user-provided lines are slightly off the surface.
          max_snap_distance: Optional distance threshold for snapping; larger moves are
              ignored if provided.
-         undo_transforms: Names of MeshManager transforms to undo at SWC export time.
-             This will move node centers back and rescale radii accordingly.
-         type_index: Integer code to write in the SWC T column for all samples.
      """
     spacing: float = 1.0  # sampling step along polylines (mesh units)
     radius_mode: str = "equivalent_area"  # {"equivalent_area", "equivalent_perimeter", "section_median", "section_circle_fit", "nearest_surface"}
-    annotate_cycles: bool = True
-    cycle_mode: str = "duplicate_junction"  # or "remove_edge"
     # When the exact plane P,t yields an empty section, try small offsets
     # along the normal by +/- k * eps until found or max_tries.
     section_probe_eps: float = 1e-4
@@ -96,9 +80,6 @@ class TraceOptions:
     # Optional: snap polylines to mesh surface prior to tracing
     snap_polylines_to_mesh: bool = False
     max_snap_distance: Optional[float] = None
-    # Undo selected transforms at SWC export (names from MeshManager.transform_stack)
-    undo_transforms: Optional[List[str]] = None
-    type_index: int = 3
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +88,7 @@ class TraceOptions:
 
 
 def build_traced_skeleton_graph(
-    mesh_or_manager: Union[trimesh.Trimesh, MeshManager],
+    mesh: trimesh.Trimesh,
     polylines: PolylinesSkeleton,
     *,
     options: Optional[TraceOptions] = None,
@@ -132,31 +113,42 @@ def build_traced_skeleton_graph(
       - `inside_mesh`: whether the sample point appears inside the mesh (signed distance <= 0)
 
     Args:
-        mesh_or_manager: The mesh to intersect against (`trimesh.Trimesh`) or a
-            `MeshManager` instance.
+        mesh: The mesh to intersect against (`trimesh.Trimesh`)
         polylines: Polyline guidance, in the same frame as the mesh.
-        options: `TraceOptions` controlling sampling, radius mode, and cycle handling.
+        options: `TraceOptions` controlling sampling, radius mode, and section probing.
 
     Returns:
-        A populated `SkeletonGraph`. Use `to_swc` to export with cycle-breaking.
+        A populated `SkeletonGraph`.
     """
     if options is None:
         options = TraceOptions()
 
     # Resolve mesh
-    if isinstance(mesh_or_manager, MeshManager):
-        mm = mesh_or_manager
-        mesh = mm.to_trimesh()
-        transform_stack = getattr(mm, "transform_stack", [])
-    elif isinstance(mesh_or_manager, trimesh.Trimesh):
-        mesh = mesh_or_manager
-        mm = None
-        transform_stack = []
-    else:
-        raise TypeError("mesh_or_manager must be a trimesh.Trimesh or MeshManager")
+    if not isinstance(mesh, trimesh.Trimesh):
+        raise TypeError("mesh must be a trimesh.Trimesh")
 
-    if mesh is None or len(getattr(mesh, "vertices", [])) == 0:
+    if len(mesh.vertices) == 0:
         raise ValueError("Mesh is empty or not provided")
+
+    # Start logging summary
+    try:
+        n_pl = len(getattr(polylines, "polylines", []) or [])
+        total_pts = 0
+        try:
+            total_pts = int(polylines.total_points())
+        except Exception:
+            pass
+        logger.info(
+            "Tracing start: mesh[V=%d,F=%d], polylines=%d (pts=%d), spacing=%.3g, radius_mode=%s",
+            len(mesh.vertices),
+            len(mesh.faces),
+            n_pl,
+            total_pts,
+            float(options.spacing),
+            str(options.radius_mode),
+        )
+    except Exception:
+        pass
 
     # Optionally snap polylines to the mesh surface
     pls = polylines.copy()
@@ -193,29 +185,6 @@ def build_traced_skeleton_graph(
     # Build graph
     skel = SkeletonGraph()
 
-    # Snapshot transforms from the mesh manager for selective SWC undo, if any
-    try:
-        _applied_transforms: List[Dict[str, Any]] = []
-        for t in transform_stack:
-            try:
-                _applied_transforms.append(
-                    {
-                        "name": getattr(t, "name", None),
-                        "M": np.array(getattr(t, "M", np.eye(4)), dtype=float),
-                        "is_uniform_scale": bool(getattr(t, "is_uniform_scale", False)),
-                        "uniform_scale": (
-                            float(getattr(t, "uniform_scale", 1.0))
-                            if getattr(t, "is_uniform_scale", False)
-                            else None
-                        ),
-                    }
-                )
-            except Exception:
-                continue
-        skel.transforms_applied = _applied_transforms
-    except Exception:
-        skel.transforms_applied = []
-
     # Helper to allocate node ids
     next_id = 0
 
@@ -225,18 +194,42 @@ def build_traced_skeleton_graph(
         next_id += 1
         return nid
 
+    # Diagnostics counters
+    total_samples = 0
+    used_section = 0
+    used_fallback = 0
+
+    # Spatial index for deduplicating nodes by overlapping coordinates
+    # Use quantization by tolerance cell to find candidates, then check true distance
+    quant_tol = max(1e-9, 1e-3 * float(options.spacing))
+
+    def _quant_key(P: np.ndarray) -> tuple[int, int, int]:
+        return tuple(np.round(np.asarray(P, dtype=float) / quant_tol).astype(int))  # type: ignore[return-value]
+
+    pos_index: dict[tuple[int, int, int], tuple[int, np.ndarray]] = {}
+
     # Process each polyline
     for pl_index, pl in enumerate(pls.as_arrays()):
         if pl is None or pl.size == 0 or pl.shape[0] < 2:
             continue
         # Resample
         samples = _resample_polyline(pl, float(options.spacing))
+        try:
+            logger.info(
+                "Polyline %d: input_pts=%d -> samples=%d",
+                int(pl_index),
+                int(pl.shape[0]),
+                int(samples.shape[0]),
+            )
+        except Exception:
+            pass
         if samples.shape[0] == 0:
             continue
         # Precompute tangents on the resampled curve
         tangents = _estimate_tangents(samples)
 
         prev_node: Optional[int] = None
+        first_node: Optional[int] = None
         for i in range(samples.shape[0]):
             P = samples[i]
             n = tangents[i]
@@ -251,7 +244,6 @@ def build_traced_skeleton_graph(
                 n = n / (np.linalg.norm(n) + 1e-12)
 
             # Fit local radius according to selected mode
-            area = 0.0
             radius = 0.0
             radius_source = "unknown"
             inside_mesh = None
@@ -280,6 +272,7 @@ def build_traced_skeleton_graph(
                     max_tries=int(options.section_probe_tries),
                 )
                 if poly2d is not None:
+                    used_section += 1
                     area = float(poly2d.area)
                     mode = str(options.radius_mode)
                     if mode == "equivalent_perimeter":
@@ -304,34 +297,90 @@ def build_traced_skeleton_graph(
                 else:
                     # No section found; robust fallback = nearest surface distance
                     area = 0.0
+                    used_fallback += 1
                     radius = _nearest_surface_distance(P, mesh, V, v_kdtree)
                     radius_source = "nearest_surface_fallback"
 
-            # Add node
-            nid = alloc_id()
-            j = {
-                "id": nid,
-                "center": np.array(P, dtype=float),
-                "radius": float(radius),
-            }
-            skel.add_junction(_junction_from_dict(j))
-            # Attach source metadata on the graph node for diagnostics
+            total_samples += 1
+            # Per-sample diagnostics (DEBUG)
             try:
-                skel.G.nodes[nid]["radius_source"] = radius_source
-                if inside_mesh is not None:
-                    skel.G.nodes[nid]["inside_mesh"] = bool(inside_mesh)
+                logger.debug(
+                    "pl=%d i=%d P=(%.4g,%.4g,%.4g) r=%.4g source=%s inside=%s",
+                    int(pl_index),
+                    int(i),
+                    float(P[0]),
+                    float(P[1]),
+                    float(P[2]),
+                    float(radius),
+                    str(radius_source),
+                    str(inside_mesh),
+                )
             except Exception:
                 pass
+
+            # Add or reuse node if overlapping an existing coordinate
+            qk = _quant_key(P)
+            nid: int
+            reused = False
+            if qk in pos_index:
+                existing_id, existing_xyz = pos_index[qk]
+                if float(np.linalg.norm(np.asarray(P, dtype=float) - existing_xyz)) <= quant_tol:
+                    nid = int(existing_id)
+                    reused = True
+                else:
+                    nid = alloc_id()
+                    j = {"id": nid, "xyz": np.array(P, dtype=float), "radius": float(radius)}
+                    skel.add_junction(_junction_from_dict(j))
+                    pos_index[qk] = (nid, np.asarray(P, dtype=float))
+            else:
+                nid = alloc_id()
+                j = {"id": nid, "xyz": np.array(P, dtype=float), "radius": float(radius)}
+                skel.add_junction(_junction_from_dict(j))
+                pos_index[qk] = (nid, np.asarray(P, dtype=float))
+
+            if not reused:
+                # Attach source metadata on the graph node for diagnostics
+                try:
+                    skel.nodes[nid]["radius_source"] = radius_source
+                    if inside_mesh is not None:
+                        skel.nodes[nid]["inside_mesh"] = bool(inside_mesh)
+                except Exception:
+                    pass
+            else:
+                try:
+                    logger.debug(
+                        "pl=%d i=%d: reused existing node %d for overlapping position",
+                        int(pl_index), int(i), int(nid)
+                    )
+                except Exception:
+                    pass
 
             # Edge from previous sample
             if prev_node is not None and prev_node != nid:
                 try:
-                    skel.G.add_edge(
+                    skel.add_edge(
                         prev_node, nid, kind="trace", polyline_index=int(pl_index)
                     )
                 except Exception:
                     pass
             prev_node = nid
+            if first_node is None:
+                first_node = nid
+
+        # No explicit closure here; cycles emerge naturally when endpoints overlap
+
+    # Final summary
+    try:
+        logger.info(
+            "Tracing done: nodes=%d, edges=%d, samples=%d, section=%d, fallback=%d",
+            int(skel.number_of_nodes()),
+            int(skel.number_of_edges()),
+            int(total_samples),
+            int(used_section),
+            int(used_fallback),
+        )
+    except Exception:
+        pass
 
     return skel
 
@@ -347,12 +396,8 @@ def _junction_from_dict(d: Dict[str, Any]):
 
     return Junction(
         id=int(d["id"]),
-        z=float(d["z"]),
-        center=np.asarray(d["center"], dtype=float),
+        xyz=np.asarray(d["xyz"], dtype=float),
         radius=float(d["radius"]),
-        area=float(d["area"]),
-        slice_index=int(d["slice_index"]),
-        cross_section_index=int(d["cross_section_index"]),
     )
 
 

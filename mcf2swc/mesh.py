@@ -14,6 +14,75 @@ import trimesh
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+def example_mesh(
+    kind: str = "cylinder",
+    *,
+    # Cylinder params
+    radius: float = 1,
+    height: float = 10,
+    sections: int | None = 16,
+    # Torus params
+    major_radius: float = 4,
+    minor_radius: float = 1,
+    major_sections: int | None = 32,
+    minor_sections: int | None = 16,
+    **kwargs,
+) -> trimesh.Trimesh:
+    """Create a simple demo mesh using trimesh primitives.
+
+    Parameters
+    ----------
+    kind : {"cylinder", "torus"}
+        Type of primitive to generate. Default "cylinder".
+    radius : float
+        Cylinder radius (when kind="cylinder"). Default 1.
+    height : float
+        Cylinder height (when kind="cylinder"). Default 10.
+    sections : int or None
+        Cylinder radial resolution (pie wedges). Default 16.
+    major_radius : float
+        Torus major radius (center of hole to centerline of tube). Default 4.
+    minor_radius : float
+        Torus minor radius (tube radius). Default 1.
+    major_sections : int or None
+        Torus resolution around major circle. Default 32.
+    minor_sections : int or None
+        Torus resolution around tube section. Default 16.
+    **kwargs : dict
+        Passed through to Trimesh constructor via trimesh.creation.* helpers
+        (e.g., process=False).
+
+    Returns
+    -------
+    trimesh.Trimesh
+        Generated primitive mesh.
+
+    Examples
+    --------
+    >>> m = example_mesh("cylinder", radius=0.4, height=1.5)
+    >>> t = example_mesh("torus", major_radius=1.0, minor_radius=0.25)
+    """
+    k = (kind or "cylinder").lower()
+    if k == "cylinder":
+        return trimesh.creation.cylinder(
+            radius=float(radius),
+            height=float(height),
+            sections=None if sections is None else int(sections),
+            **kwargs,
+        )
+    elif k == "torus":
+        # trimesh.creation.torus parameters
+        return trimesh.creation.torus(
+            major_radius=float(major_radius),
+            minor_radius=float(minor_radius),
+            major_sections=None if major_sections is None else int(major_sections),
+            minor_sections=None if minor_sections is None else int(minor_sections),
+            **kwargs,
+        )
+    else:
+        raise ValueError("example_mesh kind must be 'cylinder' or 'torus'")
+
+
 class MeshManager:
     """
     Unified mesh class handling loading, processing, and analysis.
@@ -22,7 +91,6 @@ class MeshManager:
     def __init__(self, mesh: Optional[trimesh.Trimesh] = None, verbose: bool = True):
         # Core mesh attributes
         self.mesh = mesh
-        self.bounds = self._compute_bounds()
 
         # Attributes
         self.verbose = verbose
@@ -72,7 +140,6 @@ class MeshManager:
                 raise ValueError(f"Loaded object is not a mesh: {type(mesh)}")
 
             self.mesh = mesh
-            self.bounds = self._compute_bounds()
 
             if self.verbose:
                 logger.info(

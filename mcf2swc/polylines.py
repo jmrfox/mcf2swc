@@ -70,6 +70,18 @@ class PolylinesSkeleton:
                 polylines.append(pl)
         return PolylinesSkeleton(polylines)
 
+    def load_txt(self, path: str) -> None:
+        """Load polylines into this instance from a `.polylines.txt` file.
+
+        This mirrors `from_txt` but mutates the current instance.
+
+        Example:
+            pls = PolylinesSkeleton()
+            pls.load_txt("data/polylines/cylinder.polylines.txt")
+        """
+        loaded = PolylinesSkeleton.from_txt(path)
+        self.polylines = loaded.polylines
+
     def to_txt(self, path: str) -> None:
         """Save polylines to the `.polylines.txt` format described above."""
         with open(path, "w", encoding="utf-8") as f:
@@ -108,6 +120,29 @@ class PolylinesSkeleton:
             return None
         all_pts = np.vstack(self.polylines)
         return all_pts.mean(axis=0)
+
+    # ---------------------------------------------------------------------
+    # Resampling
+    # ---------------------------------------------------------------------
+    def resample(self, spacing: float) -> "PolylinesSkeleton":
+        """Return a new PolylinesSkeleton with polylines resampled by spacing.
+
+        Includes endpoints; inserts intermediate points every ~`spacing` units
+        along arclength.
+        """
+        out: List[np.ndarray] = []
+        for pl in self.polylines:
+            out.append(_resample_polyline(pl, float(spacing)))
+        return PolylinesSkeleton(out)
+
+    def resample_inplace(self, spacing: float) -> None:
+        """In-place version of `resample`.
+
+        Modifies `self.polylines` by resampling each polyline with the given spacing.
+        """
+        self.polylines = [
+            _resample_polyline(pl, float(spacing)) for pl in self.polylines
+        ]
 
 
     # ---------------------------------------------------------------------
@@ -332,3 +367,52 @@ class PolylinesSkeleton:
                 return None
 
         raise ValueError(f"Unknown backend: {backend}")
+
+
+# ---------------------------------------------------------------------
+# Local helpers
+# ---------------------------------------------------------------------
+def _resample_polyline(pl: np.ndarray, spacing: float) -> np.ndarray:
+    """Resample a polyline at approximately constant arc-length spacing.
+
+    Includes the first and last vertex; inserts intermediate points every
+    multiple of `spacing` along cumulative arclength.
+    """
+    P = np.asarray(pl, dtype=float)
+    if P.ndim != 2 or P.shape[1] != 3 or P.shape[0] == 0:
+        return np.zeros((0, 3), dtype=float)
+    if P.shape[0] == 1:
+        return P.copy()
+
+    seg = np.linalg.norm(P[1:] - P[:-1], axis=1)
+    L = np.concatenate([[0.0], np.cumsum(seg)])
+    total = float(L[-1])
+
+    if total <= 0.0:
+        return P[[0], :].copy()
+
+    step = float(max(spacing, 1e-12))
+    # Always include start and end
+    targets = list(np.arange(0.0, total, step))
+    if targets[-1] != total:
+        targets.append(total)
+
+    out: List[np.ndarray] = []
+    si = 0  # segment index
+    for t in targets:
+        # advance si until L[si] <= t <= L[si+1]
+        while si < len(seg) and L[si + 1] < t:
+            si += 1
+        if si >= len(seg):
+            out.append(P[-1])
+            continue
+        t0 = L[si]
+        t1 = L[si + 1]
+        if t1 <= t0:
+            out.append(P[si])
+            continue
+        alpha = (t - t0) / (t1 - t0)
+        Q = (1.0 - alpha) * P[si] + alpha * P[si + 1]
+        out.append(Q)
+
+    return np.vstack(out) if out else P[[0], :].copy()
