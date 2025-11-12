@@ -28,4 +28,4 @@ The mean curvature flow (MCF) is a geometric evolution of a surface in 3D space.
 
 You can easily compute the MCF data using the [Computational Geometry Algorithms Library (CGAL)](https://doc.cgal.org/latest/Surface_mesh_skeletonization/index.html) package. CGAL provides a standalone GUI program called `CGALLab` that includes the MCF skeletonization operation. You can download the Windows demo version of it here: [CGALLab Windows Demo](https://doc.cgal.org/latest/Manual/packages.html#:~:text=Triangulated%20Surface%20Mesh%20Skeletonization).
 
-Simply open the program, load your mesh, go to `Operations -> Triangulated Surface Mesh Skeletonization -> Mean Curvature Skeleton (Advanced)`, apply the operation, then right-click on the new object labelled "fixed points" and save it to a `polylines.text` file.
+Simply open the program, load your mesh, go to `Operations -> Triangulated Surface Mesh Skeletonization -> Mean Curvature Skeleton (Advanced)`, apply the operation, then right-click on the new object labelled "fixed points" and save it to a `polylines.txt` file.
