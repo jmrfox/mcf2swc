@@ -1,14 +1,11 @@
 """
 This module builds SkeletonGraph by tracing along user-provided polylines and
-estimating radii from local mesh cross-sections perpendicular to polyline
-Tangents.
+estimating radii from local mesh cross-sections.
 
 High level:
 - Resample each input polyline at approximately fixed arc-length spacing.
-- For each resampled point P with local tangent t, determine the tangent direction
-  from the
-- Fit an equivalent circle radius from that polygon using one of:
-    * equivalent_area:    r = sqrt(A / pi)
+- For each resampled point, fit an equivalent circle radius:
+    * equivalent_area: r = sqrt(A / pi)
     * equivalent_perimeter: r = L / (2*pi), using the exterior boundary length
     * section_median: median ray-to-boundary distance in the local section
       plane from the sample origin (robust for irregular/partial sections).
@@ -61,6 +58,13 @@ class TraceOptions:
     Attributes:
         spacing: Sampling step along polylines in mesh units. Resampling keeps
             endpoints and inserts additional samples at approximately fixed arc-length.
+        normal_strategy: Strategy for computing the normal vector that defines the
+            cross-section plane orientation. One of:
+            - "tangent" (default): Use the polyline tangent direction as the normal.
+              The plane is perpendicular to the polyline direction.
+            - "radial": Use cross(tangent, radial_vector) where radial_vector points
+              from the skeleton point to the nearest surface point. This makes the
+              plane slice across the mesh width rather than along it.
         radius_strategy: Strategy for estimating node radii at each sample. One of:
             - "equivalent_area" (default): r = sqrt(A/pi) using cross-section area.
             - "equivalent_perimeter": r = L/(2*pi) using exterior boundary length.
@@ -79,6 +83,7 @@ class TraceOptions:
     """
 
     spacing: float = 1.0  # sampling step along polylines (mesh units)
+    normal_strategy: str = "tangent"  # {"tangent", "radial"}
     radius_strategy: str = (
         "equivalent_area"  # {"equivalent_area", "equivalent_perimeter", "section_median", "section_circle_fit", "nearest_surface"}
     )
@@ -104,8 +109,7 @@ def build_traced_skeleton_graph(
 ) -> SkeletonGraph:
     """
     Trace polylines over a mesh and build a `SkeletonGraph` with nodes at sampled
-    polyline points and radii estimated from local mesh cross-sections perpendicular
-    to the local tangent.
+    polyline points and radii estimated from local mesh cross-sections.
 
     - Resamples each input polyline with spacing `options.spacing`.
     - For each sample P with tangent T, intersects the mesh with the plane
@@ -244,16 +248,25 @@ def build_traced_skeleton_graph(
         first_node: Optional[int] = None
         for i in range(samples.shape[0]):
             P = samples[i]
-            n = tangents[i]
-            if not np.all(np.isfinite(n)) or float(np.linalg.norm(n)) <= 1e-12:
+            tangent = tangents[i]
+            if (
+                not np.all(np.isfinite(tangent))
+                or float(np.linalg.norm(tangent)) <= 1e-12
+            ):
                 # Fallback tangent from original segment if degenerate
                 if i + 1 < samples.shape[0]:
-                    n = samples[i + 1] - samples[i]
+                    tangent = samples[i + 1] - samples[i]
                 elif i > 0:
-                    n = samples[i] - samples[i - 1]
+                    tangent = samples[i] - samples[i - 1]
                 else:
-                    n = np.array([0.0, 0.0, 1.0], dtype=float)
-                n = n / (np.linalg.norm(n) + 1e-12)
+                    tangent = np.array([0.0, 0.0, 1.0], dtype=float)
+                tangent = tangent / (np.linalg.norm(tangent) + 1e-12)
+
+            # Compute normal for cross-section plane based on selected strategy
+            if options.normal_strategy == "radial":
+                n = _compute_radial_normal(P, tangent, mesh)
+            else:  # "tangent" (default)
+                n = tangent
 
             # Fit local radius according to selected mode
             radius = 0.0
@@ -692,6 +705,126 @@ def _cross_section_polygon_near_point(
         return composed[0]
 
     return None
+
+
+def _compute_radial_normal(
+    P: np.ndarray,
+    tangent: np.ndarray,
+    mesh: trimesh.Trimesh,
+) -> np.ndarray:
+    """Compute normal vector using radial direction to nearest surface point.
+
+    The normal is computed as cross(tangent, radial_vector) where radial_vector
+    points from P to the nearest point on the mesh surface. This makes the
+    cross-section plane slice across the mesh width rather than along it.
+
+    Args:
+        P: Skeleton point position
+        tangent: Tangent vector at P (should be normalized)
+        mesh: The mesh to find nearest surface point on
+
+    Returns:
+        Normalized normal vector for the cross-section plane
+    """
+    try:
+        # Find nearest point on mesh surface
+        # Try trimesh.proximity.closest_point first (requires rtree)
+        nearest_pt = None
+        try:
+            from trimesh.proximity import closest_point  # type: ignore
+
+            closest_pts, _dist, _tri = closest_point(mesh, P.reshape(1, 3))
+            nearest_pt = closest_pts[0]
+        except Exception:
+            # Fallback: use ray casting in perpendicular directions to find surface
+            # Cast rays perpendicular to tangent to find mesh surface
+            tangent_norm = tangent / (np.linalg.norm(tangent) + 1e-12)
+
+            # Create two perpendicular directions to tangent
+            if abs(tangent_norm[0]) < 0.9:
+                perp1 = np.cross(tangent_norm, np.array([1.0, 0.0, 0.0]))
+            else:
+                perp1 = np.cross(tangent_norm, np.array([0.0, 1.0, 0.0]))
+            perp1 = perp1 / (np.linalg.norm(perp1) + 1e-12)
+
+            # Try ray casting in perpendicular direction
+            ray_origins = np.array([P])
+            ray_directions = np.array([perp1])
+
+            try:
+                locations, index_ray, index_tri = mesh.ray.intersects_location(
+                    ray_origins=ray_origins, ray_directions=ray_directions
+                )
+                if len(locations) > 0:
+                    # Use the first intersection
+                    nearest_pt = locations[0]
+            except Exception:
+                pass
+
+            # If still no point found, try opposite direction
+            if nearest_pt is None:
+                try:
+                    ray_directions = np.array([-perp1])
+                    locations, index_ray, index_tri = mesh.ray.intersects_location(
+                        ray_origins=ray_origins, ray_directions=ray_directions
+                    )
+                    if len(locations) > 0:
+                        nearest_pt = locations[0]
+                except Exception:
+                    pass
+
+        if nearest_pt is None:
+            logger.debug(
+                "Could not find nearest surface point, falling back to tangent"
+            )
+            return tangent / (np.linalg.norm(tangent) + 1e-12)
+
+        # Compute radial vector from skeleton point to surface
+        radial = nearest_pt - P
+        radial_norm = float(np.linalg.norm(radial))
+
+        logger.debug(
+            "Radial normal: P=%s, nearest=%s, radial=%s, norm=%.6f",
+            P,
+            nearest_pt,
+            radial,
+            radial_norm,
+        )
+
+        if radial_norm <= 1e-12:
+            # Point is on or very close to surface; fall back to tangent
+            logger.debug("Radial norm too small, falling back to tangent")
+            return tangent / (np.linalg.norm(tangent) + 1e-12)
+
+        radial = radial / radial_norm
+
+        # Compute normal as cross product of tangent and radial
+        normal = np.cross(tangent, radial)
+        normal_norm = float(np.linalg.norm(normal))
+
+        logger.debug(
+            "Cross product: tangent=%s, radial=%s, normal=%s, norm=%.6f",
+            tangent,
+            radial,
+            normal,
+            normal_norm,
+        )
+
+        if normal_norm <= 1e-12:
+            # Tangent and radial are parallel; fall back to tangent
+            logger.debug("Normal norm too small (parallel), falling back to tangent")
+            return tangent / (np.linalg.norm(tangent) + 1e-12)
+
+        result = normal / normal_norm
+        logger.debug("Computed radial normal: %s", result)
+        return result
+
+    except Exception as e:
+        # Fallback to tangent on any error
+        logger.debug(
+            "Exception in _compute_radial_normal: %s, falling back to tangent", e
+        )
+        return tangent / (np.linalg.norm(tangent) + 1e-12)
 
 
 def _nearest_surface_distance(

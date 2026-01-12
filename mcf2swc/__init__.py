@@ -33,6 +33,11 @@ from .trace import (  # noqa: E402
     TraceOptions,
     build_traced_skeleton_graph,
 )
+from .radius_optimizer import (  # noqa: E402
+    OptimizerOptions,
+    RadiusOptimizer,
+    optimize_skeleton_radii,
+)
 
 __all__ = [
     "__version__",
@@ -46,4 +51,8 @@ __all__ = [
     # Tracing API
     "TraceOptions",
     "build_traced_skeleton_graph",
+    # Radius optimization
+    "OptimizerOptions",
+    "RadiusOptimizer",
+    "optimize_skeleton_radii",
 ]
