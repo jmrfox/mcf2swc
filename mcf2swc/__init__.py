@@ -47,6 +47,10 @@ from .radius_optimizer_local import (  # noqa: E402
     LocalOptimizerOptions,
     LocalRadiusOptimizer,
 )
+from .skeleton_optimizer import (  # noqa: E402
+    SkeletonOptimizer,
+    SkeletonOptimizerOptions,
+)
 
 __all__ = [
     "__version__",
@@ -65,4 +69,7 @@ __all__ = [
     "optimize_skeleton_radii",
     "LocalOptimizerOptions",
     "LocalRadiusOptimizer",
+    # Skeleton optimization
+    "SkeletonOptimizer",
+    "SkeletonOptimizerOptions",
 ]
