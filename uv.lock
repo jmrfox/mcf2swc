@@ -1277,7 +1277,7 @@ wheels = [
 [[package]]
 name = "swctools"
 version = "0.1.0"
-source = { git = "https://github.com/jmrfox/swctools.git#235fcc6de308cf1864b1e2a79cfbded655d36bd6" }
+source = { git = "https://github.com/jmrfox/swctools.git#aa11c0204e0535bcce0c67c82ca85582a2631bd0" }
 dependencies = [
     { name = "networkx" },
     { name = "numpy" },

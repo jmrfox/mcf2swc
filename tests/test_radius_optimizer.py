@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import trimesh
 
-from mcf2swc import SkeletonGraph, Junction
+from mcf2swc import SWCModel
 from mcf2swc.radius_optimizer import (
     OptimizerOptions,
     RadiusOptimizer,
@@ -20,10 +20,10 @@ class TestRadiusOptimizer:
 
     def test_optimizer_initialization(self):
         """Test that optimizer initializes correctly."""
-        # Create a simple skeleton
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=1.0))
+        # Create a simple SWC model
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=5.0, r=1.0)
         skel.add_edge(0, 1)
 
         # Create a simple mesh
@@ -38,10 +38,10 @@ class TestRadiusOptimizer:
         assert optimizer.skeleton is skel
 
     def test_get_initial_radii(self):
-        """Test extraction of initial radii from skeleton."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=2.0))
+        """Test extraction of initial radii from SWC model."""
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=5.0, r=2.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -54,10 +54,10 @@ class TestRadiusOptimizer:
         assert radii[1] == 2.0
 
     def test_set_radii(self):
-        """Test updating skeleton with new radii."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=1.0))
+        """Test updating SWC model with new radii."""
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=5.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -70,11 +70,11 @@ class TestRadiusOptimizer:
         assert skel.nodes[1]["radius"] == 3.0
 
     def test_compute_swc_surface_area_cylinder(self):
-        """Test surface area computation for a simple cylinder-like skeleton."""
-        # Create skeleton with two nodes forming a cylinder
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        """Test surface area computation for a simple cylinder-like SWC model."""
+        # Create SWC model with two nodes forming a cylinder
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -90,10 +90,10 @@ class TestRadiusOptimizer:
 
     def test_compute_swc_surface_area_frustum(self):
         """Test surface area computation for a frustum (cone with different radii)."""
-        # Create skeleton with two nodes of different radii
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=2.0))
+        # Create SWC model with two nodes of different radii
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=2.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.5, height=10.0)
@@ -111,10 +111,10 @@ class TestRadiusOptimizer:
         assert np.isclose(area, expected_area, rtol=1e-6)
 
     def test_compute_swc_volume_cylinder(self):
-        """Test volume computation for a cylinder-like skeleton."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        """Test volume computation for a cylinder-like SWC model."""
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -130,9 +130,9 @@ class TestRadiusOptimizer:
 
     def test_compute_swc_volume_frustum(self):
         """Test volume computation for a frustum."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=2.0))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=2.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.5, height=10.0)
@@ -150,9 +150,9 @@ class TestRadiusOptimizer:
 
     def test_compute_loss_surface_area(self):
         """Test loss computation with surface area metric."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -169,9 +169,9 @@ class TestRadiusOptimizer:
 
     def test_compute_loss_volume(self):
         """Test loss computation with volume metric."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -187,9 +187,9 @@ class TestRadiusOptimizer:
 
     def test_compute_loss_combined(self):
         """Test loss computation with combined metric."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -208,10 +208,10 @@ class TestRadiusOptimizer:
 
     def test_optimize_simple_cylinder(self):
         """Test optimization on a simple cylinder case."""
-        # Create skeleton with poor initial radii
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+        # Create SWC model with poor initial radii
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=0.5)
         skel.add_edge(0, 1)
 
         # Target mesh is a cylinder with radius 1.0
@@ -238,9 +238,9 @@ class TestRadiusOptimizer:
 
     def test_optimize_with_bounds(self):
         """Test that optimization respects radius bounds."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=0.5)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -263,30 +263,30 @@ class TestRadiusOptimizer:
 
     def test_optimize_skeleton_radii_convenience_function(self):
         """Test the convenience function optimize_skeleton_radii."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=0.5)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
 
         optimized_skel = optimize_skeleton_radii(skel, mesh)
 
-        # Should return a SkeletonGraph
-        assert isinstance(optimized_skel, SkeletonGraph)
+        # Should return an SWCModel
+        assert isinstance(optimized_skel, SWCModel)
 
         # Should have same nodes
         assert optimized_skel.number_of_nodes() == skel.number_of_nodes()
         assert optimized_skel.number_of_edges() == skel.number_of_edges()
 
     def test_multiple_edges(self):
-        """Test optimization with a skeleton containing multiple edges."""
-        # Create a Y-shaped skeleton
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=0.5))
-        skel.add_junction(Junction(id=2, xyz=np.array([2.0, 0.0, 8.0]), radius=0.5))
-        skel.add_junction(Junction(id=3, xyz=np.array([-2.0, 0.0, 8.0]), radius=0.5))
+        """Test optimization with an SWC model containing multiple edges."""
+        # Create a Y-shaped SWC model
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=5.0, r=0.5)
+        skel.add_junction(node_id=2, x=2.0, y=0.0, z=8.0, r=0.5)
+        skel.add_junction(node_id=3, x=-2.0, y=0.0, z=8.0, r=0.5)
         skel.add_edge(0, 1)
         skel.add_edge(1, 2)
         skel.add_edge(1, 3)
@@ -305,9 +305,9 @@ class TestRadiusOptimizer:
 
     def test_invalid_loss_function(self):
         """Test that invalid loss function raises error."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -320,9 +320,9 @@ class TestRadiusOptimizer:
 
     def test_invalid_optimizer(self):
         """Test that invalid optimizer raises error."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -335,9 +335,9 @@ class TestRadiusOptimizer:
 
     def test_regularization_constraint(self):
         """Test optimization with regularization constraint."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=0.5)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -382,10 +382,10 @@ class TestRadiusOptimizer:
 
     def test_scale_only_constraint(self):
         """Test optimization with scale-only constraint."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=0.6))
-        skel.add_junction(Junction(id=2, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=5.0, r=0.6)
+        skel.add_junction(node_id=2, x=0.0, y=0.0, z=10.0, r=0.5)
         skel.add_edge(0, 1)
         skel.add_edge(1, 2)
 
@@ -422,9 +422,9 @@ class TestRadiusOptimizer:
 
     def test_unconstrained_mode(self):
         """Test optimization with unconstrained mode."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=0.5)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -439,14 +439,14 @@ class TestRadiusOptimizer:
         optimized = optimize_skeleton_radii(skel, mesh, options=options)
 
         # Should optimize without regularization penalty
-        assert isinstance(optimized, SkeletonGraph)
+        assert isinstance(optimized, SWCModel)
         assert optimized.number_of_nodes() == 2
 
     def test_compute_regularization_loss(self):
         """Test regularization loss computation."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=1.0))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=1.0))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -464,9 +464,9 @@ class TestRadiusOptimizer:
 
     def test_data_loss_vs_total_loss(self):
         """Test that total loss includes regularization when enabled."""
-        skel = SkeletonGraph()
-        skel.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-        skel.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+        skel = SWCModel()
+        skel.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=1.0)
+        skel.add_junction(node_id=1, x=0.0, y=0.0, z=10.0, r=1.0)
         skel.add_edge(0, 1)
 
         mesh = example_mesh("cylinder", radius=1.0, height=10.0)

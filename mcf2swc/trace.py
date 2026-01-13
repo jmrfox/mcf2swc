@@ -1,9 +1,13 @@
 """
-This module builds SkeletonGraph by tracing along user-provided polylines and
+This module builds an SWC model by tracing along user-provided skeleton polylines and
 estimating radii from local mesh cross-sections.
 
+Terminology:
+- "skeleton": The mesh centroid (polylines format, result of MCF calculation) without radii
+- "SWC model" or "swc": Skeleton with radii information attached to each node
+
 High level:
-- Resample each input polyline at approximately fixed arc-length spacing.
+- Resample each input skeleton polyline at approximately fixed arc-length spacing.
 - For each resampled point, fit an equivalent circle radius:
     * equivalent_area: r = sqrt(A / pi)
     * equivalent_perimeter: r = L / (2*pi), using the exterior boundary length
@@ -12,7 +16,7 @@ High level:
     * section_circle_fit: algebraic circle fit (Kåsa) to the section boundary.
     * nearest_surface: distance from the sample point to nearest mesh surface
       (bypasses sectioning entirely, useful as a robust fallback).
-- Create a SkeletonGraph with:
+- Create an SWC model with:
     - one node per sample at position P (xyz, the exact polyline coordinate) with the
       fitted radius
     - edges connecting consecutive samples along each polyline
@@ -20,7 +24,7 @@ High level:
 Notes:
 - This module intentionally does not change connectivity beyond linking samples
   along each polyline.
-- Coordinates are taken directly from the polylines (no snapping by default).
+- Coordinates are taken directly from the skeleton polylines (no snapping by default).
   An optional snap-to-mesh pass is provided via PolylinesSkeleton if desired.
 """
 
@@ -35,8 +39,9 @@ import numpy as np
 import shapely.geometry as sgeom
 import trimesh
 
+from swctools import SWCModel
+
 from .polylines import PolylinesSkeleton
-from .skeleton import SkeletonGraph
 from .mesh import MeshManager
 
 logger = logging.getLogger(__name__)
@@ -98,9 +103,9 @@ def build_traced_skeleton_graph(
     polylines: PolylinesSkeleton,
     *,
     options: Optional[TraceOptions] = None,
-) -> SkeletonGraph:
+) -> SWCModel:
     """
-    Trace polylines over a mesh and build a `SkeletonGraph` with nodes at sampled
+    Trace skeleton polylines over a mesh and build an SWC model with nodes at sampled
     polyline points and radii estimated from local mesh cross-sections.
 
     - Resamples each input polyline with spacing `options.spacing`.
@@ -119,11 +124,11 @@ def build_traced_skeleton_graph(
 
     Args:
         mesh: The mesh to intersect against (`trimesh.Trimesh`)
-        polylines: Polyline guidance, in the same frame as the mesh.
+        polylines: Skeleton polyline guidance, in the same frame as the mesh.
         options: `TraceOptions` controlling sampling, radius strategy, and section probing.
 
     Returns:
-        A populated `SkeletonGraph`.
+        A populated SWC model (`swctools.SWCModel`).
     """
     if options is None:
         options = TraceOptions()
@@ -190,8 +195,8 @@ def build_traced_skeleton_graph(
     except Exception:
         v_kdtree = None
 
-    # Build graph
-    skel = SkeletonGraph()
+    # Build SWC model
+    skel = SWCModel()
 
     # Helper to allocate node ids
     next_id = 0
@@ -346,21 +351,23 @@ def build_traced_skeleton_graph(
                     reused = True
                 else:
                     nid = alloc_id()
-                    j = {
-                        "id": nid,
-                        "xyz": np.array(P, dtype=float),
-                        "radius": float(radius),
-                    }
-                    skel.add_junction(_junction_from_dict(j))
+                    skel.add_junction(
+                        node_id=nid,
+                        x=float(P[0]),
+                        y=float(P[1]),
+                        z=float(P[2]),
+                        r=float(radius),
+                    )
                     pos_index[qk] = (nid, np.asarray(P, dtype=float))
             else:
                 nid = alloc_id()
-                j = {
-                    "id": nid,
-                    "xyz": np.array(P, dtype=float),
-                    "radius": float(radius),
-                }
-                skel.add_junction(_junction_from_dict(j))
+                skel.add_junction(
+                    node_id=nid,
+                    x=float(P[0]),
+                    y=float(P[1]),
+                    z=float(P[2]),
+                    r=float(radius),
+                )
                 pos_index[qk] = (nid, np.asarray(P, dtype=float))
 
             if not reused:
@@ -415,17 +422,6 @@ def build_traced_skeleton_graph(
 # ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
-
-
-def _junction_from_dict(d: Dict[str, Any]):
-    """Create a skeleton.Junction dataclass instance from a dict of fields."""
-    from .skeleton import Junction  # local import to avoid circulars at import time
-
-    return Junction(
-        id=int(d["id"]),
-        xyz=np.asarray(d["xyz"], dtype=float),
-        radius=float(d["radius"]),
-    )
 
 
 def _resample_polyline(pl: np.ndarray, spacing: float) -> np.ndarray:

@@ -1,5 +1,5 @@
 """
-Optimization-based radius estimation for skeleton graphs.
+Optimization-based radius estimation for SWC models.
 
 This module provides an alternative to the procedural radius strategies in trace.py.
 Instead of determining each node's radius independently using local geometric
@@ -23,11 +23,21 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import trimesh
-
-from .skeleton import SkeletonGraph
+from swctools import SWCModel
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
+
+def _get_node_xyz(skeleton: SWCModel, node_id: int) -> np.ndarray:
+    """Extract xyz coordinates from SWCModel node."""
+    node = skeleton.nodes[node_id]
+    if "xyz" in node:
+        return np.asarray(node["xyz"], dtype=float)
+    elif "x" in node and "y" in node and "z" in node:
+        return np.array([node["x"], node["y"], node["z"]], dtype=float)
+    else:
+        raise ValueError(f"Node {node_id} missing xyz coordinates")
 
 
 @dataclass
@@ -76,20 +86,20 @@ class OptimizerOptions:
 
 class RadiusOptimizer:
     """
-    Optimizer for skeleton graph radii based on mesh approximation quality.
+    Optimizer for SWC model radii based on mesh approximation quality.
 
-    This class takes a SkeletonGraph with initial radius estimates and a target
+    This class takes an SWC model with initial radius estimates and a target
     mesh, then optimizes all radii jointly to minimize a loss function measuring
     the discrepancy between the SWC model and the mesh.
 
     Example:
-        >>> optimizer = RadiusOptimizer(skeleton_graph, mesh)
-        >>> optimized_graph = optimizer.optimize()
+        >>> optimizer = RadiusOptimizer(swc_model, mesh)
+        >>> optimized_model = optimizer.optimize()
     """
 
     def __init__(
         self,
-        skeleton: SkeletonGraph,
+        skeleton: SWCModel,
         mesh: trimesh.Trimesh,
         *,
         options: Optional[OptimizerOptions] = None,
@@ -98,7 +108,7 @@ class RadiusOptimizer:
         Initialize the optimizer.
 
         Args:
-            skeleton: SkeletonGraph with initial radius estimates at each node
+            skeleton: SWC model with initial radius estimates at each node
             mesh: Target mesh to approximate
             options: Optimization configuration
         """
@@ -133,19 +143,21 @@ class RadiusOptimizer:
 
     def get_initial_radii(self) -> np.ndarray:
         """
-        Extract current radii from the skeleton graph as a parameter vector.
+        Extract current radii from the SWC model as a parameter vector.
 
         Returns:
             Array of shape (n_nodes,) with current radius values
         """
         radii = np.zeros(self.n_nodes, dtype=float)
         for i, nid in enumerate(self.node_ids):
-            radii[i] = float(self.skeleton.nodes[nid].get("radius", 1.0))
+            node = self.skeleton.nodes[nid]
+            # Handle both 'radius' and 'r' attributes
+            radii[i] = float(node.get("radius", node.get("r", 1.0)))
         return radii
 
     def set_radii(self, radii: np.ndarray) -> None:
         """
-        Update skeleton graph with new radius values.
+        Update SWC model with new radius values.
 
         Args:
             radii: Array of shape (n_nodes,) with new radius values
@@ -153,7 +165,9 @@ class RadiusOptimizer:
         if radii.shape[0] != self.n_nodes:
             raise ValueError(f"Expected {self.n_nodes} radii, got {radii.shape[0]}")
         for i, nid in enumerate(self.node_ids):
+            # Set both 'radius' and 'r' for compatibility
             self.skeleton.nodes[nid]["radius"] = float(radii[i])
+            self.skeleton.nodes[nid]["r"] = float(radii[i])
 
     def compute_swc_surface_area(self, radii: np.ndarray) -> float:
         """
@@ -177,8 +191,8 @@ class RadiusOptimizer:
             i_v = self.node_to_idx[v]
 
             # Get positions and radii
-            xyz_u = self.skeleton.nodes[u]["xyz"]
-            xyz_v = self.skeleton.nodes[v]["xyz"]
+            xyz_u = _get_node_xyz(self.skeleton, u)
+            xyz_v = _get_node_xyz(self.skeleton, v)
             r_u = radii[i_u]
             r_v = radii[i_v]
 
@@ -208,13 +222,12 @@ class RadiusOptimizer:
         total_volume = 0.0
 
         for u, v in self.skeleton.edges():
-            # Get node indices
             i_u = self.node_to_idx[u]
             i_v = self.node_to_idx[v]
 
             # Get positions and radii
-            xyz_u = self.skeleton.nodes[u]["xyz"]
-            xyz_v = self.skeleton.nodes[v]["xyz"]
+            xyz_u = _get_node_xyz(self.skeleton, u)
+            xyz_v = _get_node_xyz(self.skeleton, v)
             r_u = radii[i_u]
             r_v = radii[i_v]
 
@@ -352,7 +365,7 @@ class RadiusOptimizer:
 
         return loss, grad
 
-    def _optimize_scale_only(self) -> SkeletonGraph:
+    def _optimize_scale_only(self) -> SWCModel:
         """
         Optimize only a global scale factor, preserving relative radii proportions.
 
@@ -360,7 +373,7 @@ class RadiusOptimizer:
         such that radii_optimized = s * initial_radii minimizes the loss function.
 
         Returns:
-            A new SkeletonGraph with scaled radii
+            A new SWC model with scaled radii
         """
         logger.info("Starting scale-only optimization")
 
@@ -420,19 +433,19 @@ class RadiusOptimizer:
             100 * (initial_loss - final_loss) / (initial_loss + 1e-12),
         )
 
-        # Create new skeleton with scaled radii
+        # Create new SWC model with scaled radii
         optimized_skeleton = self.skeleton.copy()
         for i, nid in enumerate(self.node_ids):
             optimized_skeleton.nodes[nid]["radius"] = float(optimized_radii[i])
 
         return optimized_skeleton
 
-    def optimize(self) -> SkeletonGraph:
+    def optimize(self) -> SWCModel:
         """
         Optimize radii to minimize the loss function.
 
         Returns:
-            A new SkeletonGraph with optimized radii
+            A new SWC model with optimized radii
         """
         # Handle scale-only constraint mode separately
         if self.options.constraint_mode == "scale_only":
@@ -522,7 +535,7 @@ class RadiusOptimizer:
             100 * (initial_loss - final_loss) / (initial_loss + 1e-12),
         )
 
-        # Create new skeleton with optimized radii
+        # Create new SWC model with optimized radii
         optimized_skeleton = self.skeleton.copy()
         for i, nid in enumerate(self.node_ids):
             optimized_skeleton.nodes[nid]["radius"] = float(optimized_radii[i])
@@ -531,32 +544,33 @@ class RadiusOptimizer:
 
 
 def optimize_skeleton_radii(
-    skeleton: SkeletonGraph,
+    skeleton: SWCModel,
     mesh: trimesh.Trimesh,
     *,
     options: Optional[OptimizerOptions] = None,
-) -> SkeletonGraph:
+) -> SWCModel:
     """
-    Convenience function to optimize skeleton radii.
+    Convenience function to optimize SWC model radii.
 
     Args:
-        skeleton: SkeletonGraph with initial radius estimates
+        skeleton: SWC model with initial radius estimates
         mesh: Target mesh to approximate
         options: Optimization configuration
 
     Returns:
-        New SkeletonGraph with optimized radii
+        New SWC model with optimized radii
 
     Example:
-        >>> from mcf2swc import SkeletonGraph, MeshManager
+        >>> from mcf2swc import MeshManager
+        >>> from swctools import SWCModel
         >>> from mcf2swc.radius_optimizer import optimize_skeleton_radii, OptimizerOptions
         >>>
-        >>> # Build initial skeleton with trace.py
-        >>> skeleton = build_traced_skeleton_graph(mesh, polylines)
+        >>> # Build initial SWC model with trace.py
+        >>> swc_model = build_traced_skeleton_graph(mesh, polylines)
         >>>
         >>> # Optimize radii
         >>> opts = OptimizerOptions(loss_function="surface_area", verbose=True)
-        >>> optimized = optimize_skeleton_radii(skeleton, mesh, options=opts)
+        >>> optimized = optimize_skeleton_radii(swc_model, mesh, options=opts)
     """
     optimizer = RadiusOptimizer(skeleton, mesh, options=options)
     return optimizer.optimize()

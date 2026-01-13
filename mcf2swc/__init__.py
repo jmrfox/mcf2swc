@@ -1,13 +1,17 @@
 """
 mcf2swc
 
-A lightweight toolkit for converting mesh cross-sections and polyline guidance
-into SWC skeletons.
+A lightweight toolkit for converting mesh cross-sections and skeleton polyline guidance
+into SWC models.
+
+Terminology:
+- "skeleton": The mesh centroid (polylines format, result of MCF calculation) without radii
+- "SWC model" or "swc": Skeleton with radii information attached to each node
 
 Public API:
 - MeshManager
 - PolylinesSkeleton
-- SkeletonGraph, Junction
+- SWCModel (from swctools)
 - TraceOptions, build_traced_skeleton_graph
 """
 
@@ -26,9 +30,10 @@ except PackageNotFoundError:  # pragma: no cover - best-effort in dev
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 # Re-export primary classes and functions for convenient access at package level
+from swctools import SWCModel  # noqa: E402
+
 from .mesh import MeshManager, example_mesh  # noqa: E402
 from .polylines import PolylinesSkeleton  # noqa: E402
-from .skeleton import Junction, SkeletonGraph  # noqa: E402
 from .trace import (  # noqa: E402
     TraceOptions,
     build_traced_skeleton_graph,
@@ -49,9 +54,8 @@ __all__ = [
     "MeshManager",
     "example_mesh",
     "PolylinesSkeleton",
-    # Skeleton types
-    "SkeletonGraph",
-    "Junction",
+    # SWC model (from swctools)
+    "SWCModel",
     # Tracing API
     "TraceOptions",
     "build_traced_skeleton_graph",

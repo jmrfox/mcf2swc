@@ -8,8 +8,7 @@ them independently using geometric heuristics.
 
 import numpy as np
 from mcf2swc import (
-    SkeletonGraph,
-    Junction,
+    SWCModel,
     example_mesh,
     OptimizerOptions,
     optimize_skeleton_radii,
@@ -23,11 +22,11 @@ def demo_basic_optimization():
     print("Demo 1: Basic Radius Optimization")
     print("=" * 70)
 
-    # Create a simple skeleton with poor initial radius estimates
-    skeleton = SkeletonGraph()
-    skeleton.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-    skeleton.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=0.5))
-    skeleton.add_junction(Junction(id=2, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+    # Create a simple SWC model with poor initial radius estimates
+    skeleton = SWCModel()
+    skeleton.add_junction(node_id=0, x=0.0, y=0.0, z=0.0, r=0.5)
+    skeleton.add_junction(node_id=1, x=0.0, y=0.0, z=5.0, r=0.6)
+    skeleton.add_junction(node_id=2, x=0.0, y=0.0, z=10.0, r=0.5)
     skeleton.add_edge(0, 1)
     skeleton.add_edge(1, 2)
 
@@ -87,10 +86,10 @@ def demo_loss_functions():
     print("Demo 2: Comparing Loss Functions")
     print("=" * 70)
 
-    # Create skeleton
-    skeleton = SkeletonGraph()
-    skeleton.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.7))
-    skeleton.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.7))
+    # Create SWC model
+    skeleton = SWCModel()
+    skeleton.add_junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.7)
+    skeleton.add_junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.7)
     skeleton.add_edge(0, 1)
 
     mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -119,9 +118,9 @@ def demo_with_constraints():
     print("Demo 3: Optimization with Constraints")
     print("=" * 70)
 
-    skeleton = SkeletonGraph()
-    skeleton.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-    skeleton.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+    skeleton = SWCModel()
+    skeleton.add_junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5)
+    skeleton.add_junction(id=1, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5)
     skeleton.add_edge(0, 1)
 
     mesh = example_mesh("cylinder", radius=1.0, height=10.0)
@@ -168,10 +167,10 @@ def demo_advanced_usage():
     print("Demo 4: Advanced Usage with RadiusOptimizer Class")
     print("=" * 70)
 
-    skeleton = SkeletonGraph()
-    skeleton.add_junction(Junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5))
-    skeleton.add_junction(Junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=0.6))
-    skeleton.add_junction(Junction(id=2, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5))
+    skeleton = SWCModel()
+    skeleton.add_junction(id=0, xyz=np.array([0.0, 0.0, 0.0]), radius=0.5)
+    skeleton.add_junction(id=1, xyz=np.array([0.0, 0.0, 5.0]), radius=0.6)
+    skeleton.add_junction(id=2, xyz=np.array([0.0, 0.0, 10.0]), radius=0.5)
     skeleton.add_edge(0, 1)
     skeleton.add_edge(1, 2)
 

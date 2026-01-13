@@ -20,51 +20,30 @@ import trimesh
 from scipy.optimize import minimize
 from swctools import SWCModel
 
-from .skeleton import SkeletonGraph
-
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
-# Type alias for graphs we can optimize
-SkeletonLike = Union[SkeletonGraph, SWCModel]
-
-
-def _get_node_xyz(graph: SkeletonLike, node_id: int) -> np.ndarray:
-    """Extract xyz coordinates from either SkeletonGraph or SWCModel."""
+def _get_node_xyz(graph: SWCModel, node_id: int) -> np.ndarray:
+    """Extract xyz coordinates from SWCModel."""
     node = graph.nodes[node_id]
-
-    # SkeletonGraph format: xyz as array
     if "xyz" in node:
         return np.asarray(node["xyz"], dtype=float)
-
-    # SWCModel format: x, y, z as separate floats
     elif "x" in node and "y" in node and "z" in node:
         return np.array([node["x"], node["y"], node["z"]], dtype=float)
-
     else:
         raise ValueError(f"Node {node_id} missing xyz coordinates")
 
 
-def _get_node_radius(graph: SkeletonLike, node_id: int) -> float:
-    """Extract radius from either SkeletonGraph or SWCModel."""
+def _get_node_radius(graph: SWCModel, node_id: int) -> float:
+    """Extract radius from SWCModel."""
     node = graph.nodes[node_id]
-
-    # SkeletonGraph format: 'radius'
     if "radius" in node:
         return float(node["radius"])
-
-    # SWCModel format: 'r'
     elif "r" in node:
         return float(node["r"])
-
     else:
         raise ValueError(f"Node {node_id} missing radius")
-
-
-def _is_swc_model(graph: SkeletonLike) -> bool:
-    """Check if graph is an SWCModel (vs SkeletonGraph)."""
-    return isinstance(graph, SWCModel)
 
 
 @dataclass
@@ -268,7 +247,7 @@ class LocalRadiusOptimizer:
 
     def __init__(
         self,
-        skeleton: SkeletonLike,
+        skeleton: SWCModel,
         mesh: trimesh.Trimesh,
         *,
         options: Optional[LocalOptimizerOptions] = None,
@@ -277,7 +256,7 @@ class LocalRadiusOptimizer:
         Initialize the local optimizer.
 
         Args:
-            skeleton: Skeleton graph (SkeletonGraph or SWCModel) with initial radius estimates
+            skeleton: SWC model with initial radius estimates
             mesh: Target mesh to fit
             options: Optimization options
         """
@@ -308,12 +287,12 @@ class LocalRadiusOptimizer:
             self.options.n_radial,
         )
 
-    def optimize(self) -> SkeletonLike:
+    def optimize(self) -> SWCModel:
         """
         Run the iterative segment-by-segment optimization.
 
         Returns:
-            New skeleton graph with optimized radii (same type as input)
+            New SWC model with optimized radii
         """
         edges = list(self.skeleton.edges())
         n_edges = len(edges)
@@ -452,27 +431,19 @@ class LocalRadiusOptimizer:
 
         return total_volume
 
-    def _create_optimized_skeleton(self) -> SkeletonLike:
-        """Create a new skeleton graph with optimized radii (same type as input)."""
-        is_swc = _is_swc_model(self.skeleton)
-
-        if is_swc:
-            # Create new SWCModel
-            new_skeleton = SWCModel()
-            # Copy parent map if it exists
-            if hasattr(self.skeleton, "_parents"):
-                new_skeleton._parents = dict(self.skeleton._parents)
-        else:
-            # Create new SkeletonGraph
-            new_skeleton = SkeletonGraph()
+    def _create_optimized_skeleton(self) -> SWCModel:
+        """Create a new SWC model with optimized radii."""
+        new_skeleton = SWCModel()
+        if hasattr(self.skeleton, "_parents"):
+            new_skeleton._parents = dict(self.skeleton._parents)
 
         # Copy nodes with updated radii
         for nid in self.skeleton.nodes():
             idx = self.node_to_idx[nid]
             node_data = dict(self.skeleton.nodes[nid])
 
-            # Update radius using appropriate attribute name
-            if is_swc:
+            # Update radius (handle both 'radius' and 'r' attributes)
+            if "r" in node_data:
                 node_data["r"] = float(self.current_radii[idx])
             else:
                 node_data["radius"] = float(self.current_radii[idx])
