@@ -1,17 +1,9 @@
 """
-Optimization-based radius estimation for SWC models.
+Radius optimization.
 
-This module provides an alternative to the procedural radius strategies in trace.py.
-Instead of determining each node's radius independently using local geometric
-measurements, this treats the entire set of radii as parameters in an optimization
-problem. The goal is to minimize a loss function that measures how well the SWC
-model (represented as a collection of frusta) approximates the original mesh.
-
-Key features:
-- Loss functions: surface area error, volume error, or custom combinations
-- Multiple optimization backends: scipy.optimize, gradient descent, etc.
-- Flexible initialization from existing radius estimates
-- Constraint handling (e.g., minimum/maximum radius bounds)
+This module implements a segment-by-segment optimization approach where each
+frustum's radii are optimized to minimize the distance from surface points
+to the mesh surface.
 """
 
 from __future__ import annotations
@@ -19,19 +11,21 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
+import networkx as nx
 import numpy as np
 import trimesh
+from scipy.optimize import minimize
 from swctools import SWCModel
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 
-def _get_node_xyz(skeleton: SWCModel, node_id: int) -> np.ndarray:
-    """Extract xyz coordinates from SWCModel node."""
-    node = skeleton.nodes[node_id]
+def _get_node_xyz(graph: SWCModel, node_id: int) -> np.ndarray:
+    """Extract xyz coordinates from SWCModel."""
+    node = graph.nodes[node_id]
     if "xyz" in node:
         return np.asarray(node["xyz"], dtype=float)
     elif "x" in node and "y" in node and "z" in node:
@@ -40,199 +34,393 @@ def _get_node_xyz(skeleton: SWCModel, node_id: int) -> np.ndarray:
         raise ValueError(f"Node {node_id} missing xyz coordinates")
 
 
+def _get_node_radius(graph: SWCModel, node_id: int) -> float:
+    """Extract radius from SWCModel."""
+    node = graph.nodes[node_id]
+    if "radius" in node:
+        return float(node["radius"])
+    elif "r" in node:
+        return float(node["r"])
+    else:
+        raise ValueError(f"Node {node_id} missing radius")
+
+
 @dataclass
-class OptimizerOptions:
+class RadiusOptimizerOptions:
     """
     Configuration for radius optimization.
 
     Attributes:
-        loss_function: Name of the loss function to minimize. Options:
-            - "surface_area": Minimize difference between SWC model surface area
-              and mesh surface area
-            - "volume": Minimize difference between SWC model volume and mesh volume
-            - "combined": Weighted combination of surface area and volume
-        loss_weights: Dictionary of weights for combined loss functions.
-            E.g., {"surface_area": 1.0, "volume": 0.5}
-        constraint_mode: How to constrain the optimization problem. Options:
-            - "unconstrained": No additional constraints (may be under-constrained)
-            - "regularization": Add penalty for deviating from initial radii
-            - "scale_only": Optimize only a global scale factor, preserving relative
-              proportions of initial radii
-        regularization_weight: Weight for regularization penalty (when constraint_mode
-            is "regularization"). Higher values keep radii closer to initial estimates.
-            Default: 0.1
-        optimizer: Optimization algorithm to use. Options:
-            - "scipy_lbfgsb": L-BFGS-B from scipy.optimize (default)
-            - "scipy_slsqp": SLSQP from scipy.optimize
-            - "scipy_minimize": Generic scipy.optimize.minimize
-        min_radius: Minimum allowed radius (constraint)
-        max_radius: Maximum allowed radius (constraint)
-        max_iterations: Maximum number of optimization iterations
-        tolerance: Convergence tolerance for the optimizer
+        n_longitudinal: Number of sample points along the frustum axis
+        n_radial: Number of sample points around the circumference
+        max_iterations: Maximum number of passes over all segments
+        convergence_threshold: Stop when max radius change is below this value
+        min_radius: Minimum allowed radius
+        max_radius: Maximum allowed radius
+        step_size_factor: Factor for computing optimization step size from distances
         verbose: If True, print optimization progress
     """
 
-    loss_function: str = "surface_area"
-    loss_weights: Optional[Dict[str, float]] = None
-    constraint_mode: str = "regularization"
-    regularization_weight: float = 0.1
-    optimizer: str = "scipy_lbfgsb"
+    n_longitudinal: int = 3
+    n_radial: int = 8
+    max_iterations: int = 10
+    convergence_threshold: float = 1e-4
     min_radius: float = 0.01
     max_radius: Optional[float] = None
-    max_iterations: int = 1000
-    tolerance: float = 1e-6
+    step_size_factor: float = 0.1
     verbose: bool = False
+
+
+def _sample_frustum_surface_points(
+    xyz_a: np.ndarray,
+    xyz_b: np.ndarray,
+    r_a: float,
+    r_b: float,
+    n_long: int,
+    n_rad: int,
+) -> np.ndarray:
+    """
+    Sample points uniformly on the lateral surface of a frustum.
+
+    Args:
+        xyz_a: Position of endpoint A (3,)
+        xyz_b: Position of endpoint B (3,)
+        r_a: Radius at endpoint A
+        r_b: Radius at endpoint B
+        n_long: Number of samples along the axis
+        n_rad: Number of samples around the circumference
+
+    Returns:
+        Array of surface points, shape (n_long * n_rad, 3)
+    """
+    # Compute axis direction
+    axis = xyz_b - xyz_a
+    axis_length = np.linalg.norm(axis)
+
+    if axis_length < 1e-12:
+        # Degenerate segment - return points on a sphere
+        if r_a > 0:
+            points = []
+            for i in range(n_rad):
+                theta = 2.0 * np.pi * (i / n_rad)
+                x = xyz_a[0] + r_a * np.cos(theta)
+                y = xyz_a[1] + r_a * np.sin(theta)
+                z = xyz_a[2]
+                points.append([x, y, z])
+            return np.array(points)
+        else:
+            return np.array([xyz_a])
+
+    axis_unit = axis / axis_length
+
+    # Create orthonormal frame (U, V, W) with W along axis
+    # Choose U perpendicular to axis
+    if abs(axis_unit[0]) < 0.9:
+        temp = np.array([1.0, 0.0, 0.0])
+    else:
+        temp = np.array([0.0, 1.0, 0.0])
+
+    U = np.cross(temp, axis_unit)
+    U = U / (np.linalg.norm(U) + 1e-12)
+    V = np.cross(axis_unit, U)
+    V = V / (np.linalg.norm(V) + 1e-12)
+
+    # Sample points
+    points = []
+    for i in range(n_long):
+        # Parameter along axis [0, 1]
+        t = i / max(1, n_long - 1) if n_long > 1 else 0.5
+
+        # Position and radius at this t
+        center = xyz_a + t * axis
+        radius = r_a + t * (r_b - r_a)
+
+        # Sample points around the circumference
+        for j in range(n_rad):
+            theta = 2.0 * np.pi * (j / n_rad)
+            offset = radius * (np.cos(theta) * U + np.sin(theta) * V)
+            point = center + offset
+            points.append(point)
+
+    return np.array(points)
+
+
+def _compute_distances_to_mesh(
+    points: np.ndarray,
+    mesh: trimesh.Trimesh,
+) -> np.ndarray:
+    """
+    Compute unsigned distances from points to nearest mesh surface.
+
+    Args:
+        points: Array of points, shape (N, 3)
+        mesh: Target mesh
+
+    Returns:
+        Array of distances, shape (N,)
+    """
+    try:
+        from trimesh.proximity import closest_point
+
+        _, distances, _ = closest_point(mesh, points)
+        return distances
+    except Exception:
+        # Fallback: compute distances to vertices
+        vertices = np.asarray(mesh.vertices, dtype=float)
+        distances = []
+        for p in points:
+            dists = np.linalg.norm(vertices - p, axis=1)
+            distances.append(np.min(dists))
+        return np.array(distances)
+
+
+def _optimize_segment_radii(
+    xyz_a: np.ndarray,
+    xyz_b: np.ndarray,
+    r_a_init: float,
+    r_b_init: float,
+    mesh: trimesh.Trimesh,
+    options: LocalOptimizerOptions,
+) -> Tuple[float, float, float]:
+    """
+    Optimize radii for a single segment to minimize MSE distance to mesh.
+
+    Args:
+        xyz_a: Position of endpoint A
+        xyz_b: Position of endpoint B
+        r_a_init: Initial radius at A
+        r_b_init: Initial radius at B
+        mesh: Target mesh
+        options: Optimization options
+
+    Returns:
+        Tuple of (optimized r_a, optimized r_b, final MSE)
+    """
+
+    def objective(radii):
+        r_a, r_b = radii
+
+        # Sample surface points with current radii
+        points = _sample_frustum_surface_points(
+            xyz_a, xyz_b, r_a, r_b, options.n_longitudinal, options.n_radial
+        )
+
+        # Compute distances to mesh
+        distances = _compute_distances_to_mesh(points, mesh)
+
+        # Return MSE
+        return np.mean(distances**2)
+
+    # Initial guess
+    x0 = np.array([r_a_init, r_b_init])
+
+    # Bounds
+    bounds = [
+        (options.min_radius, options.max_radius if options.max_radius else np.inf),
+        (options.min_radius, options.max_radius if options.max_radius else np.inf),
+    ]
+
+    # Optimize
+    result = minimize(
+        objective,
+        x0,
+        method="L-BFGS-B",
+        bounds=bounds,
+        options={"maxiter": 50, "ftol": 1e-6},
+    )
+
+    r_a_opt, r_b_opt = result.x
+    mse = result.fun
+
+    return float(r_a_opt), float(r_b_opt), float(mse)
 
 
 class RadiusOptimizer:
     """
-    Optimizer for SWC model radii based on mesh approximation quality.
+    Segment-by-segment radius optimizer.
 
-    This class takes an SWC model with initial radius estimates and a target
-    mesh, then optimizes all radii jointly to minimize a loss function measuring
-    the discrepancy between the SWC model and the mesh.
-
-    Example:
-        >>> optimizer = RadiusOptimizer(swc_model, mesh)
-        >>> optimized_model = optimizer.optimize()
+    This optimizer iterates over all segments (edges) in the skeleton graph,
+    optimizing each segment's endpoint radii to minimize the distance from
+    frustum surface points to the mesh surface.
     """
 
     def __init__(
         self,
-        skeleton: SWCModel,
+        morphology: SWCModel,
         mesh: trimesh.Trimesh,
         *,
-        options: Optional[OptimizerOptions] = None,
+        options: Optional[RadiusOptimizerOptions] = None,
     ):
         """
-        Initialize the optimizer.
+        Initialize the radius optimizer.
 
         Args:
-            skeleton: SWC model with initial radius estimates at each node
-            mesh: Target mesh to approximate
-            options: Optimization configuration
+            skeleton: SWC model with initial radius estimates
+            mesh: Target mesh to fit
+            options: Optimization options
         """
-        self.skeleton = skeleton
+        self.skeleton = morphology
         self.mesh = mesh
-        self.options = options if options is not None else OptimizerOptions()
+        self.options = options if options is not None else RadiusOptimizerOptions()
 
-        # Extract node ordering for parameter vector
-        self.node_ids = sorted(skeleton.nodes())
-        self.n_nodes = len(self.node_ids)
+        # Build node index mapping
+        self.node_to_idx = {nid: i for i, nid in enumerate(sorted(morphology.nodes()))}
+        self.idx_to_node = {i: nid for nid, i in self.node_to_idx.items()}
 
-        # Build index mapping
-        self.node_to_idx = {nid: i for i, nid in enumerate(self.node_ids)}
-
-        # Store initial radii for regularization
-        self.initial_radii = self.get_initial_radii()
-
-        # Cache mesh properties
-        self._mesh_surface_area = None
-        self._mesh_volume = None
-
-        # Optimization history
-        self.history: List[Dict[str, Any]] = []
-
-        logger.info(
-            "RadiusOptimizer initialized: nodes=%d, loss=%s, constraint=%s, optimizer=%s",
-            self.n_nodes,
-            self.options.loss_function,
-            self.options.constraint_mode,
-            self.options.optimizer,
+        # Extract initial radii using helper function
+        self.initial_radii = np.array(
+            [
+                _get_node_radius(morphology, self.idx_to_node[i])
+                for i in range(len(self.node_to_idx))
+            ]
         )
 
-    def get_initial_radii(self) -> np.ndarray:
+        # Current radii (will be updated during optimization)
+        self.current_radii = self.initial_radii.copy()
+
+        logger.info(
+            "RadiusOptimizer initialized: nodes=%d, edges=%d, n_long=%d, n_rad=%d",
+            self.skeleton.number_of_nodes(),
+            self.skeleton.number_of_edges(),
+            self.options.n_longitudinal,
+            self.options.n_radial,
+        )
+
+    def optimize(self) -> SWCModel:
         """
-        Extract current radii from the SWC model as a parameter vector.
+        Run the iterative segment-by-segment optimization.
 
         Returns:
-            Array of shape (n_nodes,) with current radius values
+            New SWC model with optimized radii
         """
-        radii = np.zeros(self.n_nodes, dtype=float)
-        for i, nid in enumerate(self.node_ids):
-            node = self.skeleton.nodes[nid]
-            # Handle both 'radius' and 'r' attributes
-            radii[i] = float(node.get("radius", node.get("r", 1.0)))
-        return radii
+        edges = list(self.skeleton.edges())
+        n_edges = len(edges)
 
-    def set_radii(self, radii: np.ndarray) -> None:
-        """
-        Update SWC model with new radius values.
+        if self.options.verbose:
+            print(
+                f"Starting local optimization: {n_edges} segments, max {self.options.max_iterations} iterations"
+            )
 
-        Args:
-            radii: Array of shape (n_nodes,) with new radius values
-        """
-        if radii.shape[0] != self.n_nodes:
-            raise ValueError(f"Expected {self.n_nodes} radii, got {radii.shape[0]}")
-        for i, nid in enumerate(self.node_ids):
-            # Set both 'radius' and 'r' for compatibility
-            self.skeleton.nodes[nid]["radius"] = float(radii[i])
-            self.skeleton.nodes[nid]["r"] = float(radii[i])
+        for iteration in range(self.options.max_iterations):
+            max_change = 0.0
+            total_mse = 0.0
 
-    def compute_swc_surface_area(self, radii: np.ndarray) -> float:
-        """
-        Compute total surface area of the SWC model (frusta).
+            # Process each segment
+            for edge_idx, (u, v) in enumerate(edges):
+                # Get node indices
+                i_u = self.node_to_idx[u]
+                i_v = self.node_to_idx[v]
 
-        Each edge in the skeleton represents a frustum (truncated cone) connecting
-        two nodes with potentially different radii. The surface area includes the
-        lateral surface of each frustum.
+                # Get positions using helper function
+                xyz_u = _get_node_xyz(self.skeleton, u)
+                xyz_v = _get_node_xyz(self.skeleton, v)
 
-        Args:
-            radii: Array of radii for each node
+                # Get current radii
+                r_u = self.current_radii[i_u]
+                r_v = self.current_radii[i_v]
 
-        Returns:
-            Total surface area of all frusta
-        """
+                # Optimize this segment
+                r_u_new, r_v_new, mse = _optimize_segment_radii(
+                    xyz_u, xyz_v, r_u, r_v, self.mesh, self.options
+                )
+
+                # Update radii
+                self.current_radii[i_u] = r_u_new
+                self.current_radii[i_v] = r_v_new
+
+                # Track changes
+                change_u = abs(r_u_new - r_u)
+                change_v = abs(r_v_new - r_v)
+                max_change = max(max_change, change_u, change_v)
+                total_mse += mse
+
+            avg_mse = total_mse / n_edges
+
+            if self.options.verbose:
+                print(
+                    f"  Iteration {iteration + 1}: max_change={max_change:.6f}, avg_mse={avg_mse:.6f}"
+                )
+
+            logger.info(
+                "Iteration %d: max_change=%.6f, avg_mse=%.6f",
+                iteration + 1,
+                max_change,
+                avg_mse,
+            )
+
+            # Check convergence
+            if max_change < self.options.convergence_threshold:
+                if self.options.verbose:
+                    print(f"Converged after {iteration + 1} iterations")
+                logger.info("Converged after %d iterations", iteration + 1)
+                break
+
+        # Compute final global metrics for monitoring
+        final_sa = self._compute_skeleton_surface_area(self.current_radii)
+        final_vol = self._compute_skeleton_volume(self.current_radii)
+        mesh_sa = float(self.mesh.area)
+        mesh_vol = float(self.mesh.volume)
+
+        sa_error = abs(final_sa - mesh_sa) / mesh_sa if mesh_sa > 0 else 0.0
+        vol_error = abs(final_vol - mesh_vol) / mesh_vol if mesh_vol > 0 else 0.0
+
+        if self.options.verbose:
+            print(f"\nFinal metrics:")
+            print(
+                f"  Surface area: skeleton={final_sa:.2f}, mesh={mesh_sa:.2f}, error={sa_error:.2%}"
+            )
+            print(
+                f"  Volume: skeleton={final_vol:.2f}, mesh={mesh_vol:.2f}, error={vol_error:.2%}"
+            )
+
+        logger.info(
+            "Optimization complete: SA_error=%.2f%%, Vol_error=%.2f%%",
+            sa_error * 100,
+            vol_error * 100,
+        )
+
+        # Create new skeleton with optimized radii
+        return self._create_optimized_skeleton()
+
+    def _compute_skeleton_surface_area(self, radii: np.ndarray) -> float:
+        """Compute total surface area of frustum segments."""
         total_area = 0.0
 
         for u, v in self.skeleton.edges():
-            # Get node indices
             i_u = self.node_to_idx[u]
             i_v = self.node_to_idx[v]
 
-            # Get positions and radii
             xyz_u = _get_node_xyz(self.skeleton, u)
             xyz_v = _get_node_xyz(self.skeleton, v)
             r_u = radii[i_u]
             r_v = radii[i_v]
 
-            # Compute frustum lateral surface area
-            # A = π(r1 + r2) * sqrt(h^2 + (r1 - r2)^2)
-            # where h is the height (edge length)
+            # Frustum lateral surface area: π * (r1 + r2) * s
+            # where s = sqrt(h^2 + (r2 - r1)^2) is slant height
             h = float(np.linalg.norm(xyz_v - xyz_u))
             if h <= 0:
                 continue
 
-            slant = math.sqrt(h * h + (r_u - r_v) ** 2)
-            area = math.pi * (r_u + r_v) * slant
+            s = math.sqrt(h * h + (r_v - r_u) * (r_v - r_u))
+            area = math.pi * (r_u + r_v) * s
             total_area += area
 
         return total_area
 
-    def compute_swc_volume(self, radii: np.ndarray) -> float:
-        """
-        Compute total volume of the SWC model (frusta).
-
-        Args:
-            radii: Array of radii for each node
-
-        Returns:
-            Total volume of all frusta
-        """
+    def _compute_skeleton_volume(self, radii: np.ndarray) -> float:
+        """Compute total volume of frustum segments."""
         total_volume = 0.0
 
         for u, v in self.skeleton.edges():
             i_u = self.node_to_idx[u]
             i_v = self.node_to_idx[v]
 
-            # Get positions and radii
             xyz_u = _get_node_xyz(self.skeleton, u)
             xyz_v = _get_node_xyz(self.skeleton, v)
             r_u = radii[i_u]
             r_v = radii[i_v]
 
-            # Compute frustum volume
-            # V = (π * h / 3) * (r1^2 + r1*r2 + r2^2)
+            # Frustum volume: V = (π * h / 3) * (r1^2 + r1*r2 + r2^2)
             h = float(np.linalg.norm(xyz_v - xyz_u))
             if h <= 0:
                 continue
@@ -242,335 +430,28 @@ class RadiusOptimizer:
 
         return total_volume
 
-    def get_mesh_surface_area(self) -> float:
-        """Get cached mesh surface area."""
-        if self._mesh_surface_area is None:
-            self._mesh_surface_area = float(self.mesh.area)
-        return self._mesh_surface_area
+    def _create_optimized_skeleton(self) -> SWCModel:
+        """Create a new SWC model with optimized radii."""
+        new_skeleton = SWCModel()
+        if hasattr(self.skeleton, "_parents"):
+            new_skeleton._parents = dict(self.skeleton._parents)
 
-    def get_mesh_volume(self) -> float:
-        """Get cached mesh volume."""
-        if self._mesh_volume is None:
-            self._mesh_volume = float(self.mesh.volume)
-        return self._mesh_volume
+        # Copy nodes with updated radii
+        for nid in self.skeleton.nodes():
+            idx = self.node_to_idx[nid]
+            node_data = dict(self.skeleton.nodes[nid])
 
-    def compute_data_loss(self, radii: np.ndarray) -> float:
-        """
-        Compute the data loss (mesh approximation error) for a given set of radii.
+            # Update radius (handle both 'radius' and 'r' attributes)
+            if "r" in node_data:
+                node_data["r"] = float(self.current_radii[idx])
+            else:
+                node_data["radius"] = float(self.current_radii[idx])
 
-        Args:
-            radii: Array of radii for each node
+            new_skeleton.add_node(nid, **node_data)
 
-        Returns:
-            Data loss value (lower is better)
-        """
-        loss_type = self.options.loss_function
+        # Copy edges
+        for u, v in self.skeleton.edges():
+            edge_data = dict(self.skeleton.edges[u, v])
+            new_skeleton.add_edge(u, v, **edge_data)
 
-        if loss_type == "surface_area":
-            swc_area = self.compute_swc_surface_area(radii)
-            mesh_area = self.get_mesh_surface_area()
-            # Relative error
-            loss = abs(swc_area - mesh_area) / (mesh_area + 1e-12)
-
-        elif loss_type == "volume":
-            swc_vol = self.compute_swc_volume(radii)
-            mesh_vol = self.get_mesh_volume()
-            # Relative error
-            loss = abs(swc_vol - mesh_vol) / (abs(mesh_vol) + 1e-12)
-
-        elif loss_type == "combined":
-            weights = self.options.loss_weights or {
-                "surface_area": 1.0,
-                "volume": 1.0,
-            }
-
-            swc_area = self.compute_swc_surface_area(radii)
-            mesh_area = self.get_mesh_surface_area()
-            area_loss = abs(swc_area - mesh_area) / (mesh_area + 1e-12)
-
-            swc_vol = self.compute_swc_volume(radii)
-            mesh_vol = self.get_mesh_volume()
-            vol_loss = abs(swc_vol - mesh_vol) / (abs(mesh_vol) + 1e-12)
-
-            loss = (
-                weights.get("surface_area", 1.0) * area_loss
-                + weights.get("volume", 1.0) * vol_loss
-            )
-
-        else:
-            raise ValueError(f"Unknown loss function: {loss_type}")
-
-        return loss
-
-    def compute_regularization_loss(self, radii: np.ndarray) -> float:
-        """
-        Compute regularization penalty for deviating from initial radii.
-
-        Args:
-            radii: Array of radii for each node
-
-        Returns:
-            Regularization loss (L2 penalty)
-        """
-        # Normalized L2 distance from initial radii
-        diff = radii - self.initial_radii
-        norm_initial = np.linalg.norm(self.initial_radii) + 1e-12
-        return float(np.linalg.norm(diff) / norm_initial)
-
-    def compute_loss(self, radii: np.ndarray) -> float:
-        """
-        Compute the total loss function for a given set of radii.
-
-        Includes data loss and optional regularization based on constraint_mode.
-
-        Args:
-            radii: Array of radii for each node
-
-        Returns:
-            Total loss value (lower is better)
-        """
-        data_loss = self.compute_data_loss(radii)
-
-        # Add regularization if requested
-        if self.options.constraint_mode == "regularization":
-            reg_loss = self.compute_regularization_loss(radii)
-            total_loss = data_loss + self.options.regularization_weight * reg_loss
-            return total_loss
-        else:
-            return data_loss
-
-    def compute_loss_and_gradient(self, radii: np.ndarray) -> Tuple[float, np.ndarray]:
-        """
-        Compute loss and its gradient with respect to radii.
-
-        Uses finite differences for gradient approximation.
-
-        Args:
-            radii: Array of radii for each node
-
-        Returns:
-            Tuple of (loss, gradient)
-        """
-        loss = self.compute_loss(radii)
-
-        # Finite difference gradient
-        eps = 1e-6
-        grad = np.zeros_like(radii)
-
-        for i in range(len(radii)):
-            radii_plus = radii.copy()
-            radii_plus[i] += eps
-            loss_plus = self.compute_loss(radii_plus)
-            grad[i] = (loss_plus - loss) / eps
-
-        return loss, grad
-
-    def _optimize_scale_only(self) -> SWCModel:
-        """
-        Optimize only a global scale factor, preserving relative radii proportions.
-
-        This reduces the optimization to a 1D problem: find the best scale factor s
-        such that radii_optimized = s * initial_radii minimizes the loss function.
-
-        Returns:
-            A new SWC model with scaled radii
-        """
-        logger.info("Starting scale-only optimization")
-
-        # Define loss function for scale factor
-        def scale_loss(s: float) -> float:
-            scaled_radii = s * self.initial_radii
-            return self.compute_data_loss(scaled_radii)
-
-        # Set up bounds for scale factor based on radius constraints
-        min_scale = self.options.min_radius / (np.min(self.initial_radii) + 1e-12)
-        if self.options.max_radius is not None:
-            max_scale = self.options.max_radius / (np.max(self.initial_radii) + 1e-12)
-        else:
-            max_scale = 100.0  # Reasonable upper bound
-
-        # Ensure bounds are valid
-        min_scale = max(min_scale, 0.01)
-        max_scale = max(max_scale, min_scale * 1.1)
-
-        # Callback for tracking progress
-        iteration = [0]
-
-        def callback(xk):
-            iteration[0] += 1
-            if self.options.verbose and iteration[0] % 10 == 0:
-                s = float(xk) if np.isscalar(xk) else float(xk[0])
-                loss = scale_loss(s)
-                logger.info(
-                    f"Iteration {iteration[0]}: scale = {s:.6f}, loss = {loss:.6e}"
-                )
-                self.history.append(
-                    {"iteration": iteration[0], "scale": s, "loss": loss}
-                )
-
-        # Optimize scale factor using scipy
-        from scipy.optimize import minimize_scalar
-
-        result = minimize_scalar(
-            scale_loss,
-            bounds=(min_scale, max_scale),
-            method="bounded",
-            options={"maxiter": self.options.max_iterations},
-        )
-
-        optimal_scale = float(result.x)
-        optimized_radii = optimal_scale * self.initial_radii
-
-        # Log results
-        initial_loss = scale_loss(1.0)
-        final_loss = scale_loss(optimal_scale)
-        logger.info(
-            "Scale-only optimization complete: optimal_scale=%.6f, "
-            "initial_loss=%.6e, final_loss=%.6e, improvement=%.2f%%",
-            optimal_scale,
-            initial_loss,
-            final_loss,
-            100 * (initial_loss - final_loss) / (initial_loss + 1e-12),
-        )
-
-        # Create new SWC model with scaled radii
-        optimized_skeleton = self.skeleton.copy()
-        for i, nid in enumerate(self.node_ids):
-            optimized_skeleton.nodes[nid]["radius"] = float(optimized_radii[i])
-
-        return optimized_skeleton
-
-    def optimize(self) -> SWCModel:
-        """
-        Optimize radii to minimize the loss function.
-
-        Returns:
-            A new SWC model with optimized radii
-        """
-        # Handle scale-only constraint mode separately
-        if self.options.constraint_mode == "scale_only":
-            return self._optimize_scale_only()
-
-        # Get initial radii
-        r0 = self.get_initial_radii()
-
-        # Set up bounds
-        bounds = []
-        for i in range(self.n_nodes):
-            min_r = self.options.min_radius
-            max_r = self.options.max_radius if self.options.max_radius else np.inf
-            bounds.append((min_r, max_r))
-
-        # Callback for tracking progress
-        iteration = [0]
-
-        def callback(xk):
-            iteration[0] += 1
-            if self.options.verbose and iteration[0] % 10 == 0:
-                loss = self.compute_loss(xk)
-                logger.info(f"Iteration {iteration[0]}: loss = {loss:.6e}")
-                self.history.append({"iteration": iteration[0], "loss": loss})
-
-        # Run optimization
-        logger.info("Starting optimization with %s", self.options.optimizer)
-
-        if self.options.optimizer == "scipy_lbfgsb":
-            from scipy.optimize import minimize
-
-            result = minimize(
-                fun=self.compute_loss,
-                x0=r0,
-                method="L-BFGS-B",
-                jac=lambda x: self.compute_loss_and_gradient(x)[1],
-                bounds=bounds,
-                options={
-                    "maxiter": self.options.max_iterations,
-                    "ftol": self.options.tolerance,
-                },
-                callback=callback,
-            )
-            optimized_radii = result.x
-
-        elif self.options.optimizer == "scipy_slsqp":
-            from scipy.optimize import minimize
-
-            result = minimize(
-                fun=self.compute_loss,
-                x0=r0,
-                method="SLSQP",
-                bounds=bounds,
-                options={
-                    "maxiter": self.options.max_iterations,
-                    "ftol": self.options.tolerance,
-                },
-                callback=callback,
-            )
-            optimized_radii = result.x
-
-        elif self.options.optimizer == "scipy_minimize":
-            from scipy.optimize import minimize
-
-            result = minimize(
-                fun=self.compute_loss,
-                x0=r0,
-                bounds=bounds,
-                options={
-                    "maxiter": self.options.max_iterations,
-                },
-                callback=callback,
-            )
-            optimized_radii = result.x
-
-        else:
-            raise ValueError(f"Unknown optimizer: {self.options.optimizer}")
-
-        # Log results
-        initial_loss = self.compute_loss(r0)
-        final_loss = self.compute_loss(optimized_radii)
-        logger.info(
-            "Optimization complete: initial_loss=%.6e, final_loss=%.6e, "
-            "improvement=%.2f%%",
-            initial_loss,
-            final_loss,
-            100 * (initial_loss - final_loss) / (initial_loss + 1e-12),
-        )
-
-        # Create new SWC model with optimized radii
-        optimized_skeleton = self.skeleton.copy()
-        for i, nid in enumerate(self.node_ids):
-            optimized_skeleton.nodes[nid]["radius"] = float(optimized_radii[i])
-
-        return optimized_skeleton
-
-
-def optimize_skeleton_radii(
-    skeleton: SWCModel,
-    mesh: trimesh.Trimesh,
-    *,
-    options: Optional[OptimizerOptions] = None,
-) -> SWCModel:
-    """
-    Convenience function to optimize SWC model radii.
-
-    Args:
-        skeleton: SWC model with initial radius estimates
-        mesh: Target mesh to approximate
-        options: Optimization configuration
-
-    Returns:
-        New SWC model with optimized radii
-
-    Example:
-        >>> from mcf2swc import MeshManager
-        >>> from swctools import SWCModel
-        >>> from mcf2swc.radius_optimizer import optimize_skeleton_radii, OptimizerOptions
-        >>>
-        >>> # Build initial SWC model with fit_morphology
-        >>> swc_model = fit_morphology(mesh, polylines)
-        >>>
-        >>> # Optimize radii
-        >>> opts = OptimizerOptions(loss_function="surface_area", verbose=True)
-        >>> optimized = optimize_skeleton_radii(swc_model, mesh, options=opts)
-    """
-    optimizer = RadiusOptimizer(skeleton, mesh, options=options)
-    return optimizer.optimize()
+        return new_skeleton

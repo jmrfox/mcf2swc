@@ -9,7 +9,7 @@ import networkx as nx
 from mcf2swc import (
     fit_morphology,
     FitOptions,
-    PolylinesSkeleton,
+    SkeletonGraph,
     example_mesh,
     SWCModel,
 )
@@ -23,10 +23,10 @@ def test_torus_creates_cycle():
     """Test that fitting a closed torus polyline creates a cycle in the MorphologyGraph."""
     # Load torus mesh and polylines
     mesh = example_mesh("torus")
-    pls = PolylinesSkeleton.from_txt(str(DATA / "torus.polylines.txt"))
+    skel = SkeletonGraph.from_txt(str(DATA / "torus.polylines.txt"))
 
     # Fit morphology
-    morph = fit_morphology(mesh, pls, options=FitOptions(spacing=1.0))
+    morph = fit_morphology(mesh, skel, options=FitOptions(spacing=1.0))
 
     # The torus polyline is closed, so we should have a cycle
     cycle_basis = nx.cycle_basis(morph)

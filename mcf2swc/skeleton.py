@@ -168,42 +168,89 @@ class SkeletonGraph(nx.Graph):
     @classmethod
     def from_txt(cls, path: str, tolerance: float = 1e-6) -> "SkeletonGraph":
         """
-        Load a SkeletonGraph from a `.polylines.txt` file.
+        Load a SkeletonGraph from a file.
 
-        File format: Each line is `N x1 y1 z1 x2 y2 z2 ... xN yN zN`
+        Supports two formats:
+        1. GraphML format (.graphml or .xml extension) - native graph format
+        2. Legacy polylines format (.polylines.txt) - for backward compatibility
 
         Args:
-            path: Path to the polylines text file
-            tolerance: Distance threshold for merging nearby endpoints
+            path: Path to the skeleton file
+            tolerance: Distance threshold for merging nearby endpoints (polylines format only)
 
         Returns:
             SkeletonGraph instance
         """
-        polylines: List[np.ndarray] = []
+        import networkx as nx
 
-        with open(path, "r", encoding="utf-8") as f:
-            for line_no, line in enumerate(f, start=1):
-                s = line.strip()
-                if not s:
-                    continue
+        # Check file extension to determine format
+        if path.endswith(".graphml") or path.endswith(".xml"):
+            # Load from GraphML format
+            G = nx.read_graphml(path)
 
-                parts = s.split()
-                try:
-                    n = int(float(parts[0]))
-                except Exception as e:
-                    raise ValueError(f"Invalid header count on line {line_no}") from e
+            # Create SkeletonGraph and copy data
+            graph = cls(tolerance=tolerance)
 
-                coords = parts[1:]
-                if len(coords) != 3 * n:
-                    raise ValueError(
-                        f"Line {line_no}: expected {3*n} coordinate values, got {len(coords)}"
-                    )
+            # Add nodes with positions
+            for node_id in G.nodes():
+                node_data = G.nodes[node_id]
+                # Convert node_id back to int
+                node_int = int(node_id)
 
-                vals = np.array([float(c) for c in coords], dtype=float)
-                pl = vals.reshape(n, 3)
-                polylines.append(pl)
+                # Parse position from string format "x,y,z"
+                pos_str = node_data.get("pos", "0,0,0")
+                pos = np.array([float(x) for x in pos_str.split(",")], dtype=float)
 
-        return cls.from_polylines(polylines, tolerance=tolerance)
+                graph.add_node(node_int, pos=pos)
+
+            # Add edges with metadata
+            for u, v, data in G.edges(data=True):
+                u_int = int(u)
+                v_int = int(v)
+
+                edge_data = {}
+                if "length" in data:
+                    edge_data["length"] = float(data["length"])
+                if "polyline_idx" in data:
+                    edge_data["polyline_idx"] = int(data["polyline_idx"])
+                if "segment_idx" in data:
+                    edge_data["segment_idx"] = int(data["segment_idx"])
+
+                graph.add_edge(u_int, v_int, **edge_data)
+
+            # Set graph-level tolerance
+            graph.graph["tolerance"] = tolerance
+
+            return graph
+        else:
+            # Legacy polylines format
+            polylines = []
+
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    parts = line.split()
+                    if len(parts) < 4:  # Need at least N and one (x,y,z) coordinate
+                        continue
+
+                    try:
+                        n = int(parts[0])
+                        coords = [float(x) for x in parts[1:]]
+
+                        if len(coords) != n * 3:
+                            continue
+
+                        # Reshape into (N, 3) array
+                        pl = np.array(coords).reshape(n, 3)
+                        polylines.append(pl)
+
+                    except (ValueError, IndexError):
+                        continue
+
+            return cls.from_polylines(polylines, tolerance=tolerance)
 
     def _get_next_node_id(self) -> int:
         """Get the next available node ID."""
@@ -240,6 +287,88 @@ class SkeletonGraph(nx.Graph):
             Set of node IDs that are continuation nodes
         """
         return {node for node in self.nodes() if self.degree(node) == 2}
+
+    def detect_branch_points(self, tolerance: float = 1e-6) -> dict:
+        """
+        Detect branch points and endpoints in the skeleton.
+
+        Note:
+            `SkeletonGraph` already merges endpoints within tolerance on import.
+            The `tolerance` argument is accepted for API compatibility.
+
+        Args:
+            tolerance: Unused; kept for compatibility.
+
+        Returns:
+            Dictionary containing:
+                - 'branch_points': List of node IDs for branch nodes
+                - 'endpoints': List of node IDs for terminal nodes
+                - 'branch_locations': List of 3D coordinates of branch nodes
+                - 'endpoint_locations': List of 3D coordinates of terminal nodes
+        """
+        _ = tolerance
+        branch_nodes = sorted(self.get_branch_nodes())
+        terminal_nodes = sorted(self.get_terminal_nodes())
+        return {
+            "branch_points": branch_nodes,
+            "endpoints": terminal_nodes,
+            "branch_locations": [self.get_node_position(n) for n in branch_nodes],
+            "endpoint_locations": [self.get_node_position(n) for n in terminal_nodes],
+        }
+
+    def get_branch_point_indices(self, tolerance: float = 1e-6) -> Set[int]:
+        """Return the set of branch node IDs.
+
+        Args:
+            tolerance: Unused; kept for compatibility.
+
+        Returns:
+            Set of node IDs.
+        """
+        _ = tolerance
+        return set(self.get_branch_nodes())
+
+    def get_true_endpoint_indices(self, tolerance: float = 1e-6) -> Set[int]:
+        """Return the set of terminal node IDs.
+
+        Args:
+            tolerance: Unused; kept for compatibility.
+
+        Returns:
+            Set of node IDs.
+        """
+        _ = tolerance
+        return set(self.get_terminal_nodes())
+
+    def build_graph(self, tolerance: float = 1e-6) -> nx.Graph:
+        """
+        Build a networkx graph representation with node type annotations.
+
+        This is primarily a compatibility helper for tests. The returned graph is a
+        plain `nx.Graph` (not a `SkeletonGraph`).
+
+        Args:
+            tolerance: Unused; kept for compatibility.
+
+        Returns:
+            A `nx.Graph` with nodes annotated with:
+                - 'pos': (x, y, z)
+                - 'type': 'endpoint' | 'branch' | 'continuation'
+        """
+        _ = tolerance
+        G = nx.Graph()
+        for n in self.nodes():
+            if self.is_branch_node(n):
+                node_type = "branch"
+            elif self.is_terminal_node(n):
+                node_type = "endpoint"
+            else:
+                node_type = "continuation"
+            pos = self.get_node_position(n)
+            G.add_node(n, pos=pos, type=node_type)
+        for u, v, data in self.edges(data=True):
+            G.add_edge(u, v, **(data or {}))
+        return G
 
     def is_terminal_node(self, node: int) -> bool:
         """Check if a node is a terminal node (degree 1)."""
@@ -310,6 +439,163 @@ class SkeletonGraph(nx.Graph):
         for i, node in enumerate(sorted(self.nodes())):
             self.set_node_position(node, positions[i])
 
+    def _edge_length(self, u: int, v: int) -> float:
+        data = self.get_edge_data(u, v) or {}
+        length = data.get("length")
+        if length is not None:
+            return float(length)
+        pu = self.get_node_position(u)
+        pv = self.get_node_position(v)
+        return float(np.linalg.norm(pv - pu))
+
+    def _trace_from_terminal(self, start: int) -> tuple[int, list[int], float]:
+        """Trace from a terminal node until the next non-continuation node.
+
+        Returns (end_node, path_nodes, length).
+        """
+        if start not in self:
+            return start, [start], 0.0
+        if self.degree(start) != 1:
+            return start, [start], 0.0
+
+        path = [start]
+        prev = None
+        current = start
+        length = 0.0
+
+        while True:
+            nbrs = list(self.neighbors(current))
+            if prev is not None:
+                nbrs = [n for n in nbrs if n != prev]
+            if len(nbrs) == 0:
+                break
+            nxt = nbrs[0]
+            length += self._edge_length(current, nxt)
+            prev, current = current, nxt
+            path.append(current)
+            if self.degree(current) != 2:
+                break
+        return current, path, length
+
+    def prune_short_branches(
+        self,
+        min_length: Optional[float] = None,
+        min_length_percentile: Optional[float] = None,
+        tolerance: float = 1e-6,
+        iterative: bool = True,
+        verbose: bool = False,
+    ) -> "SkeletonGraph":
+        """Remove short terminal branches.
+
+        A terminal branch is a path from a terminal node (degree 1) to the next
+        non-continuation node (degree != 2). If the path ends at a branch node
+        (degree 3+) and its geometric length is below the threshold, it is removed.
+        Isolated components that connect terminal-to-terminal with no branch nodes
+        are removed regardless of length.
+
+        Length is computed from edge lengths (or node coordinates if missing), so
+        "short" refers to *geometric* length, not node count.
+        """
+        _ = tolerance
+        if self.number_of_nodes() == 0:
+            return self.copy_skeleton()
+
+        if min_length is None and min_length_percentile is None:
+            raise ValueError("Must specify either min_length or min_length_percentile")
+
+        # Determine threshold from the original graph
+        original = self.copy_skeleton()
+        original_branch_lengths = list(original.compute_branch_lengths().values())
+        if len(original_branch_lengths) == 0:
+            # Nothing to prune
+            return self.copy_skeleton()
+
+        if min_length is not None:
+            threshold = float(min_length)
+        else:
+            threshold = float(
+                np.percentile(original_branch_lengths, min_length_percentile)
+            )
+
+        if verbose:
+            logger.info("Pruning branches with length < %.4f", threshold)
+
+        current = self.copy_skeleton()
+        while True:
+            terminal_nodes = sorted(
+                [n for n in current.nodes() if current.degree(n) == 1]
+            )
+            nodes_to_remove: Set[int] = set()
+            visited_terminals: Set[int] = set()
+
+            for t in terminal_nodes:
+                if t in visited_terminals or t not in current:
+                    continue
+
+                end, path, length = current._trace_from_terminal(t)
+                if len(path) <= 1:
+                    visited_terminals.add(t)
+                    continue
+
+                visited_terminals.add(t)
+                if end != t and current.degree(end) == 1:
+                    visited_terminals.add(end)
+
+                is_isolated = end != t and current.degree(end) == 1
+                ends_at_branch = end != t and current.degree(end) >= 3
+
+                should_remove = False
+                if is_isolated:
+                    should_remove = True
+                elif ends_at_branch and length < threshold:
+                    should_remove = True
+
+                if not should_remove:
+                    continue
+
+                # Remove everything except the branch node when applicable
+                if ends_at_branch:
+                    nodes_to_remove.update(path[:-1])
+                else:
+                    nodes_to_remove.update(path)
+
+            if len(nodes_to_remove) == 0:
+                break
+
+            current.remove_nodes_from([n for n in nodes_to_remove if n in current])
+
+            if not iterative:
+                break
+
+        return current
+
+    def prune_short_branches_inplace(
+        self,
+        min_length: Optional[float] = None,
+        min_length_percentile: Optional[float] = None,
+        tolerance: float = 1e-6,
+        verbose: bool = False,
+    ) -> int:
+        """In-place version of `prune_short_branches`.
+
+        Returns:
+            Number of nodes removed.
+        """
+        before = self.number_of_nodes()
+        pruned = self.prune_short_branches(
+            min_length=min_length,
+            min_length_percentile=min_length_percentile,
+            tolerance=tolerance,
+            iterative=True,
+            verbose=verbose,
+        )
+        self.clear()
+        self.add_nodes_from(pruned.nodes(data=True))
+        self.add_edges_from(pruned.edges(data=True))
+        self.graph.update(pruned.graph)
+        self._next_node_id = getattr(pruned, "_next_node_id", self._next_node_id)
+        return before - self.number_of_nodes()
+
     # ---------------------------------------------------------------------
     # Basic properties
     # ---------------------------------------------------------------------
@@ -366,7 +652,7 @@ class SkeletonGraph(nx.Graph):
         Convert the graph back to a list of polyline arrays.
 
         Reconstructs polylines by grouping edges with the same polyline_idx
-        and ordering them by segment_idx.
+        and ordering them by segment_idx, properly handling branch points.
 
         Returns:
             List of (N_i, 3) arrays representing polylines
@@ -395,16 +681,29 @@ class SkeletonGraph(nx.Graph):
             if not edges:
                 continue
 
-            # Build polyline from ordered edges
+            # Build polyline from ordered edges by following the chain
             points = []
 
-            # Add first point of first edge
-            _, u0, v0 = edges[0]
-            points.append(self.get_node_position(u0))
+            # Start with the first edge
+            _, u_first, v_first = edges[0]
+            current_node = u_first
+            points.append(self.get_node_position(current_node))
 
-            # Add second point of each edge
-            for _, u, v in edges:
-                points.append(self.get_node_position(v))
+            # Follow the chain of edges
+            for seg_idx, u, v in edges:
+                # Determine which node is next in the chain
+                if u == current_node:
+                    next_node = v
+                elif v == current_node:
+                    next_node = u
+                else:
+                    # Edge doesn't connect to current node - this shouldn't happen
+                    # but if it does, just add both nodes
+                    points.append(self.get_node_position(u))
+                    next_node = v
+
+                points.append(self.get_node_position(next_node))
+                current_node = next_node
 
             polylines.append(np.array(points))
 
@@ -412,18 +711,48 @@ class SkeletonGraph(nx.Graph):
 
     def to_txt(self, path: str) -> None:
         """
-        Save the skeleton to a `.polylines.txt` file.
+        Save the skeleton to a file.
+
+        Saves in GraphML format (.graphml) which preserves all graph structure,
+        node positions, and edge metadata. This is the native format for SkeletonGraph.
+
+        For legacy polylines format, use to_polylines() and save manually.
 
         Args:
-            path: Output file path
+            path: Output file path (will use .graphml extension if not provided)
         """
-        polylines = self.to_polylines()
+        import networkx as nx
 
-        with open(path, "w", encoding="utf-8") as f:
-            for pl in polylines:
-                n = int(pl.shape[0])
-                flat = " ".join(f"{v:.17g}" for v in pl.reshape(-1))
-                f.write(f"{n} {flat}\n")
+        # Ensure .graphml extension
+        if not path.endswith(".graphml"):
+            if path.endswith(".txt"):
+                path = path.replace(".txt", ".graphml")
+            else:
+                path = path + ".graphml"
+
+        # Create a copy of the graph for serialization
+        G = nx.Graph()
+
+        # Add nodes with position as string (GraphML requires string attributes)
+        for node in self.nodes():
+            pos = self.get_node_position(node)
+            pos_str = f"{pos[0]},{pos[1]},{pos[2]}"
+            G.add_node(str(node), pos=pos_str)
+
+        # Add edges with metadata
+        for u, v, data in self.edges(data=True):
+            edge_attrs = {}
+            if "length" in data:
+                edge_attrs["length"] = str(data["length"])
+            if "polyline_idx" in data:
+                edge_attrs["polyline_idx"] = str(data["polyline_idx"])
+            if "segment_idx" in data:
+                edge_attrs["segment_idx"] = str(data["segment_idx"])
+
+            G.add_edge(str(u), str(v), **edge_attrs)
+
+        # Write to GraphML format
+        nx.write_graphml(G, path)
 
     # ---------------------------------------------------------------------
     # Copy
@@ -503,7 +832,7 @@ class SkeletonGraph(nx.Graph):
         """
         Resample the skeleton to have approximately uniform spacing between nodes.
 
-        Converts to polylines, resamples each polyline, then reconstructs graph.
+        Works directly on graph edges, subdividing long edges and preserving topology.
 
         Args:
             spacing: Target distance between consecutive nodes
@@ -511,19 +840,87 @@ class SkeletonGraph(nx.Graph):
         Returns:
             New SkeletonGraph with resampled nodes
         """
-        # Convert to polylines
-        polylines = self.to_polylines()
+        import networkx as nx
 
-        # Resample each polyline
-        resampled_polylines = []
-        for pl in polylines:
-            resampled = _resample_polyline(pl, float(spacing))
-            resampled_polylines.append(resampled)
+        new_graph = SkeletonGraph(tolerance=self.graph.get("tolerance", 1e-6))
 
-        # Create new graph from resampled polylines
-        return SkeletonGraph.from_polylines(
-            resampled_polylines, tolerance=self.graph.get("tolerance", 1e-6)
-        )
+        # Copy all existing nodes first
+        node_mapping = {}  # old_node -> new_node
+        for node in self.nodes():
+            new_node = new_graph._get_next_node_id()
+            new_graph.add_node(new_node, pos=self.get_node_position(node).copy())
+            node_mapping[node] = new_node
+
+        # Process each edge, subdividing if necessary
+        for u, v, data in self.edges(data=True):
+            pos_u = self.get_node_position(u)
+            pos_v = self.get_node_position(v)
+
+            # Calculate edge length
+            edge_length = np.linalg.norm(pos_v - pos_u)
+
+            # Determine number of segments needed
+            n_segments = max(1, int(np.ceil(edge_length / spacing)))
+
+            if n_segments == 1:
+                # Edge is short enough, just connect directly
+                new_u = node_mapping[u]
+                new_v = node_mapping[v]
+                length = float(edge_length)
+                new_graph.add_edge(
+                    new_u,
+                    new_v,
+                    length=length,
+                    polyline_idx=data.get("polyline_idx"),
+                    segment_idx=data.get("segment_idx"),
+                )
+            else:
+                # Subdivide edge
+                prev_node = node_mapping[u]
+
+                for i in range(1, n_segments):
+                    # Interpolate position
+                    t = i / n_segments
+                    new_pos = pos_u + t * (pos_v - pos_u)
+
+                    # Create intermediate node
+                    intermediate_node = new_graph._get_next_node_id()
+                    new_graph.add_node(intermediate_node, pos=new_pos)
+
+                    # Add edge from previous to intermediate
+                    seg_length = float(
+                        np.linalg.norm(
+                            new_graph.get_node_position(intermediate_node)
+                            - new_graph.get_node_position(prev_node)
+                        )
+                    )
+                    new_graph.add_edge(
+                        prev_node,
+                        intermediate_node,
+                        length=seg_length,
+                        polyline_idx=data.get("polyline_idx"),
+                        segment_idx=data.get("segment_idx"),
+                    )
+
+                    prev_node = intermediate_node
+
+                # Add final segment to v
+                new_v = node_mapping[v]
+                seg_length = float(
+                    np.linalg.norm(
+                        new_graph.get_node_position(new_v)
+                        - new_graph.get_node_position(prev_node)
+                    )
+                )
+                new_graph.add_edge(
+                    prev_node,
+                    new_v,
+                    length=seg_length,
+                    polyline_idx=data.get("polyline_idx"),
+                    segment_idx=data.get("segment_idx"),
+                )
+
+        return new_graph
 
     # ---------------------------------------------------------------------
     # Mesh surface projection

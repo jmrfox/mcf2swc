@@ -1,13 +1,13 @@
 """
-This module builds an SWC model by tracing along user-provided skeleton polylines and
+This module builds an SWC model by tracing along user-provided skeleton graph and
 estimating radii from local mesh cross-sections.
 
 Terminology:
-- "skeleton": The mesh centroid (polylines format, result of MCF calculation) without radii
+- "skeleton": The mesh centroid (SkeletonGraph, result of MCF calculation) without radii
 - "SWC model" or "swc": Skeleton with radii information attached to each node
 
 High level:
-- Resample each input skeleton polyline at approximately fixed arc-length spacing.
+- Resample each skeleton edge at approximately fixed arc-length spacing.
 - For each resampled point, fit an equivalent circle radius:
     * equivalent_area: r = sqrt(A / pi)
     * equivalent_perimeter: r = L / (2*pi), using the exterior boundary length
@@ -17,15 +17,15 @@ High level:
     * nearest_surface: distance from the sample point to nearest mesh surface
       (bypasses sectioning entirely, useful as a robust fallback).
 - Create an SWC model with:
-    - one node per sample at position P (xyz, the exact polyline coordinate) with the
+    - one node per sample at position P (xyz, the exact skeleton coordinate) with the
       fitted radius
-    - edges connecting consecutive samples along each polyline
+    - edges connecting consecutive samples along each skeleton path
 
 Notes:
 - This module intentionally does not change connectivity beyond linking samples
-  along each polyline.
-- Coordinates are taken directly from the skeleton polylines (no snapping by default).
-  An optional snap-to-mesh pass is provided via PolylinesSkeleton if desired.
+  along each skeleton path.
+- Coordinates are taken directly from the skeleton graph (no snapping by default).
+  An optional snap-to-mesh pass is provided via SkeletonGraph.snap_to_mesh_surface if desired.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ import trimesh
 
 from swctools import SWCModel
 
-from .polylines import PolylinesSkeleton
+from .skeleton import SkeletonGraph
 from .mesh import MeshManager
 from .morphology_graph import MorphologyGraph, Junction
 
@@ -100,14 +100,13 @@ class FitOptions:
 
 
 def fit_morphology(
-    mesh: trimesh.Trimesh | MeshManager,
-    polylines: PolylinesSkeleton,
-    *,
+    mesh: Union[trimesh.Trimesh, MeshManager],
+    skeleton: SkeletonGraph,
     options: Optional[FitOptions] = None,
 ) -> MorphologyGraph:
     """
-    Trace skeleton polylines over a mesh and build a morphology graph with nodes at sampled
-    polyline points and radii estimated from local mesh cross-sections.
+    Trace skeleton over a mesh and build a morphology graph with nodes at sampled
+    points and radii estimated from local mesh cross-sections.
 
     - Resamples each input polyline with spacing `options.spacing`.
     - For each sample P with tangent T, intersects the mesh with the plane
@@ -123,13 +122,13 @@ def fit_morphology(
       - `radius_strategy`: which strategy actually provided the radius
       - `inside_mesh`: whether the sample point appears inside the mesh (signed distance >= 0)
 
-    The input polylines may contain cycles, and this function preserves them in the
+    The input skeleton may contain cycles, and this function preserves them in the
     returned MorphologyGraph. Use `MorphologyGraph.to_swc_file()` to export to SWC format,
     which will break cycles by duplicating nodes with annotations.
 
     Args:
-        mesh: The mesh to intersect against (`trimesh.Trimesh`)
-        polylines: Skeleton polyline guidance, in the same frame as the mesh.
+        mesh: The mesh to intersect against (`trimesh.Trimesh` or `MeshManager`)
+        skeleton: Skeleton guidance (SkeletonGraph), in the same frame as the mesh.
         options: `FitOptions` controlling sampling, radius strategy, and section probing.
 
     Returns:
@@ -148,40 +147,35 @@ def fit_morphology(
     if len(mesh.vertices) == 0:
         raise ValueError("Mesh is empty or not provided")
 
-    # Start logging summary
-    try:
-        n_pl = len(getattr(polylines, "polylines", []) or [])
-        total_pts = 0
-        try:
-            total_pts = int(polylines.total_points())
-        except Exception:
-            pass
-        logger.info(
-            "Tracing start: mesh[V=%d,F=%d], polylines=%d (pts=%d), spacing=%.3g, radius_strategy=%s",
-            len(mesh.vertices),
-            len(mesh.faces),
-            n_pl,
-            total_pts,
-            float(options.spacing),
-            str(options.radius_strategy),
-        )
-    except Exception:
-        pass
+    # Work directly with SkeletonGraph
+    if not isinstance(skeleton, SkeletonGraph):
+        raise TypeError("skeleton must be a SkeletonGraph instance")
 
-    # Optionally snap polylines to the mesh surface
-    pls = polylines.copy()
+    # Optionally snap skeleton to mesh surface
+    skel = skeleton.copy_skeleton()
     if options.snap_polylines_to_mesh:
         try:
-            moved, mean = pls.snap_to_mesh_surface(
+            moved, mean = skel.snap_to_mesh_surface(
                 mesh,
                 project_outside_only=True,
                 max_distance=options.max_snap_distance,
             )
             logger.info(
-                "Polylines snapped to mesh surface: moved=%d, mean=%.4g", moved, mean
+                "Skeleton snapped to mesh surface: moved=%d, mean=%.4g", moved, mean
             )
         except Exception as e:
-            logger.warning("Failed snapping polylines to mesh: %s", e)
+            logger.warning("Failed snapping skeleton to mesh: %s", e)
+
+    # Start logging summary
+    logger.info(
+        "Tracing start: mesh[V=%d,F=%d], skeleton[nodes=%d,edges=%d], spacing=%.3g, radius_strategy=%s",
+        len(mesh.vertices),
+        len(mesh.faces),
+        skel.number_of_nodes(),
+        skel.number_of_edges(),
+        float(options.spacing),
+        str(options.radius_strategy),
+    )
 
     # Pre-compute mesh scale for section probing epsilon
     V = np.asarray(mesh.vertices, dtype=float)
@@ -226,23 +220,59 @@ def fit_morphology(
 
     pos_index: dict[tuple[int, int, int], tuple[int, np.ndarray]] = {}
 
-    # Process each polyline
-    for pl_index, pl in enumerate(pls.as_arrays()):
-        if pl is None or pl.size == 0 or pl.shape[0] < 2:
+    # Process each edge in the skeleton graph
+    # Group edges by polyline_idx to maintain connectivity
+    edge_groups = {}
+    for u, v, data in skel.edges(data=True):
+        poly_idx = data.get("polyline_idx", 0)
+        if poly_idx not in edge_groups:
+            edge_groups[poly_idx] = []
+        edge_groups[poly_idx].append((data.get("segment_idx", 0), u, v))
+
+    # Process each group (original polyline) as a connected path
+    for pl_index in sorted(edge_groups.keys()):
+        edges = sorted(edge_groups[pl_index], key=lambda x: x[0])
+
+        # Build the path from edges
+        if not edges:
             continue
-        # Resample
+
+        # Reconstruct the path points
+        path_points = []
+        _, u_first, v_first = edges[0]
+        current_node = u_first
+        path_points.append(skel.get_node_position(current_node))
+
+        for seg_idx, u, v in edges:
+            if u == current_node:
+                next_node = v
+            elif v == current_node:
+                next_node = u
+            else:
+                # Disconnected edge, start new path
+                path_points.append(skel.get_node_position(u))
+                next_node = v
+
+            path_points.append(skel.get_node_position(next_node))
+            current_node = next_node
+
+        pl = np.array(path_points)
+
+        if pl.shape[0] < 2:
+            continue
+
+        # Resample the path
         samples = _resample_polyline(pl, float(options.spacing))
-        try:
-            logger.info(
-                "Polyline %d: input_pts=%d -> samples=%d",
-                int(pl_index),
-                int(pl.shape[0]),
-                int(samples.shape[0]),
-            )
-        except Exception:
-            pass
+        logger.info(
+            "Edge group %d: input_pts=%d -> samples=%d",
+            int(pl_index),
+            int(pl.shape[0]),
+            int(samples.shape[0]),
+        )
+
         if samples.shape[0] == 0:
             continue
+
         # Precompute tangents on the resampled curve
         tangents = _estimate_tangents(samples)
 

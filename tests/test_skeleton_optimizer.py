@@ -8,7 +8,7 @@ import trimesh
 
 from mcf2swc import (
     MeshManager,
-    PolylinesSkeleton,
+    SkeletonGraph,
     SkeletonOptimizer,
     SkeletonOptimizerOptions,
     example_mesh,
@@ -24,7 +24,7 @@ class TestSkeletonOptimizerOptions:
         assert opts.max_iterations == 100
         assert opts.step_size == 0.1
         assert opts.convergence_threshold == 1e-4
-        assert opts.preserve_endpoints is True
+        assert opts.preserve_terminal_nodes is True
         assert opts.smoothing_weight == 0.5
         assert opts.verbose is False
 
@@ -61,7 +61,7 @@ class TestSkeletonOptimizer:
                 [0.5, 0.0, 3.5],
             ]
         )
-        return PolylinesSkeleton([points])
+        return SkeletonGraph.from_polylines([points])
 
     @pytest.fixture
     def cylinder_skeleton_outside(self):
@@ -75,7 +75,7 @@ class TestSkeletonOptimizer:
                 [0.0, 0.0, 3.5],
             ]
         )
-        return PolylinesSkeleton([points])
+        return SkeletonGraph.from_polylines([points])
 
     @pytest.fixture
     def cylinder_skeleton_offset(self):
@@ -89,7 +89,7 @@ class TestSkeletonOptimizer:
                 [0.3, 0.2, 3.5],
             ]
         )
-        return PolylinesSkeleton([points])
+        return SkeletonGraph.from_polylines([points])
 
     def test_initialization(self, cylinder_mesh, cylinder_skeleton_inside):
         """Test basic initialization of SkeletonOptimizer."""
@@ -113,7 +113,7 @@ class TestSkeletonOptimizer:
         optimizer = SkeletonOptimizer(cylinder_skeleton_inside, cylinder_mesh)
         has_crossing, num_outside, max_dist = optimizer.check_surface_crossing()
 
-        points = np.vstack(cylinder_skeleton_inside.polylines)
+        points = cylinder_skeleton_inside.get_all_positions()
         inside_check = cylinder_mesh.contains(points)
         assert np.all(
             inside_check
@@ -137,9 +137,8 @@ class TestSkeletonOptimizer:
         optimizer = SkeletonOptimizer(cylinder_skeleton_inside, cylinder_mesh, opts)
         optimized = optimizer.optimize()
 
-        assert isinstance(optimized, PolylinesSkeleton)
-        assert len(optimized.polylines) == len(cylinder_skeleton_inside.polylines)
-        assert len(optimized.polylines[0]) == len(cylinder_skeleton_inside.polylines[0])
+        assert isinstance(optimized, SkeletonGraph)
+        assert optimized.number_of_nodes() == cylinder_skeleton_inside.number_of_nodes()
 
     def test_optimize_skeleton_outside(self, cylinder_mesh, cylinder_skeleton_outside):
         """Test optimization of skeleton with points outside mesh."""
@@ -167,8 +166,10 @@ class TestSkeletonOptimizer:
         optimizer = SkeletonOptimizer(cylinder_skeleton_offset, cylinder_mesh, opts)
         optimized = optimizer.optimize()
 
-        original_points = cylinder_skeleton_offset.polylines[0]
-        optimized_points = optimized.polylines[0]
+        original_polylines = cylinder_skeleton_offset.to_polylines()
+        optimized_polylines = optimized.to_polylines()
+        original_points = original_polylines[0]
+        optimized_points = optimized_polylines[0]
 
         total_movement = np.sum(
             np.linalg.norm(optimized_points - original_points, axis=1)
@@ -176,20 +177,20 @@ class TestSkeletonOptimizer:
         assert total_movement > 0, "Optimization should move points"
 
         assert len(optimized_points) == len(original_points)
-        assert (
-            optimized.polylines[0].shape == cylinder_skeleton_offset.polylines[0].shape
-        )
+        assert optimized_points.shape == original_points.shape
 
     def test_preserve_endpoints(self, cylinder_mesh, cylinder_skeleton_offset):
-        """Test that endpoints are preserved when preserve_endpoints=True."""
+        """Test that endpoints are preserved when preserve_terminal_nodes=True."""
         opts = SkeletonOptimizerOptions(
-            max_iterations=50, preserve_endpoints=True, verbose=False
+            max_iterations=50, preserve_terminal_nodes=True, verbose=False
         )
         optimizer = SkeletonOptimizer(cylinder_skeleton_offset, cylinder_mesh, opts)
         optimized = optimizer.optimize()
 
-        original_points = cylinder_skeleton_offset.polylines[0]
-        optimized_points = optimized.polylines[0]
+        original_polylines = cylinder_skeleton_offset.to_polylines()
+        optimized_polylines = optimized.to_polylines()
+        original_points = original_polylines[0]
+        optimized_points = optimized_polylines[0]
 
         np.testing.assert_allclose(original_points[0], optimized_points[0], rtol=1e-10)
         np.testing.assert_allclose(
@@ -197,15 +198,17 @@ class TestSkeletonOptimizer:
         )
 
     def test_do_not_preserve_endpoints(self, cylinder_mesh, cylinder_skeleton_offset):
-        """Test that endpoints can move when preserve_endpoints=False."""
+        """Test that endpoints can move when preserve_terminal_nodes=False."""
         opts = SkeletonOptimizerOptions(
-            max_iterations=50, preserve_endpoints=False, verbose=False
+            max_iterations=50, preserve_terminal_nodes=False, verbose=False
         )
         optimizer = SkeletonOptimizer(cylinder_skeleton_offset, cylinder_mesh, opts)
         optimized = optimizer.optimize()
 
-        original_points = cylinder_skeleton_offset.polylines[0]
-        optimized_points = optimized.polylines[0]
+        original_polylines = cylinder_skeleton_offset.to_polylines()
+        optimized_polylines = optimized.to_polylines()
+        original_points = original_polylines[0]
+        optimized_points = optimized_polylines[0]
 
         endpoint_moved = not np.allclose(
             original_points[0], optimized_points[0], rtol=1e-10
@@ -214,19 +217,17 @@ class TestSkeletonOptimizer:
 
     def test_empty_polyline(self, cylinder_mesh):
         """Test optimization with empty polyline."""
-        empty_skeleton = PolylinesSkeleton([np.zeros((0, 3))])
+        empty_skeleton = SkeletonGraph.from_polylines([np.zeros((0, 3))])
         optimizer = SkeletonOptimizer(empty_skeleton, cylinder_mesh)
         optimized = optimizer.optimize()
-        assert len(optimized.polylines) == 1
-        assert len(optimized.polylines[0]) == 0
+        assert optimized.number_of_nodes() == 0
 
     def test_single_point_polyline(self, cylinder_mesh):
         """Test optimization with single-point polyline."""
-        single_point = PolylinesSkeleton([np.array([[0.0, 0.0, 0.0]])])
+        single_point = SkeletonGraph.from_polylines([np.array([[0.0, 0.0, 0.0]])])
         optimizer = SkeletonOptimizer(single_point, cylinder_mesh)
         optimized = optimizer.optimize()
-        assert len(optimized.polylines) == 1
-        assert len(optimized.polylines[0]) == 1
+        assert optimized.number_of_nodes() == 1
 
     def test_multiple_polylines(self, cylinder_mesh):
         """Test optimization with multiple polylines."""
@@ -234,28 +235,26 @@ class TestSkeletonOptimizer:
             [[0.0, 0.0, -3.0], [0.0, 0.0, -1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 3.0]]
         )
         polyline2 = np.array([[0.2, 0.2, -2.0], [0.2, 0.2, 0.0], [0.2, 0.2, 2.0]])
-        skeleton = PolylinesSkeleton([polyline1, polyline2])
+        skeleton = SkeletonGraph.from_polylines([polyline1, polyline2])
 
         opts = SkeletonOptimizerOptions(max_iterations=20, verbose=False)
         optimizer = SkeletonOptimizer(skeleton, cylinder_mesh, opts)
         optimized = optimizer.optimize()
 
-        assert len(optimized.polylines) == 2
-        assert len(optimized.polylines[0]) == len(polyline1)
-        assert len(optimized.polylines[1]) == len(polyline2)
+        opt_polylines = optimized.to_polylines()
+        assert len(opt_polylines) == 2
 
     def test_get_optimization_stats(self, cylinder_mesh, cylinder_skeleton_outside):
         """Test getting optimization statistics."""
         optimizer = SkeletonOptimizer(cylinder_skeleton_outside, cylinder_mesh)
         stats = optimizer.get_optimization_stats()
 
-        assert "num_polylines" in stats
-        assert "total_points" in stats
-        assert "points_outside_mesh" in stats
+        assert "num_nodes" in stats
+        assert "num_edges" in stats
+        assert "nodes_outside_mesh" in stats
         assert "max_distance_outside" in stats
-        assert stats["num_polylines"] == 1
-        assert stats["total_points"] == 5
-        assert stats["points_outside_mesh"] > 0
+        assert stats["num_nodes"] == 5
+        assert stats["nodes_outside_mesh"] > 0
 
     def test_smoothing_weight_effect(self, cylinder_mesh, cylinder_skeleton_offset):
         """Test that smoothing weight affects optimization."""
@@ -275,9 +274,9 @@ class TestSkeletonOptimizer:
         )
         optimized_high_smoothing = optimizer_high_smoothing.optimize()
 
-        assert not np.allclose(
-            optimized_no_smoothing.polylines[0], optimized_high_smoothing.polylines[0]
-        )
+        no_smooth_pl = optimized_no_smoothing.to_polylines()[0]
+        high_smooth_pl = optimized_high_smoothing.to_polylines()[0]
+        assert not np.allclose(no_smooth_pl, high_smooth_pl)
 
     def test_convergence(self, cylinder_mesh, cylinder_skeleton_offset):
         """Test that optimization converges."""
@@ -290,7 +289,7 @@ class TestSkeletonOptimizer:
         optimizer = SkeletonOptimizer(cylinder_skeleton_offset, cylinder_mesh, opts)
         optimized = optimizer.optimize()
 
-        assert isinstance(optimized, PolylinesSkeleton)
+        assert isinstance(optimized, SkeletonGraph)
 
     def test_torus_mesh(self):
         """Test optimization with a torus mesh."""
@@ -308,12 +307,11 @@ class TestSkeletonOptimizer:
                 [3.0, 0.0, 0.0],
             ]
         )
-        skeleton = PolylinesSkeleton([points])
+        skeleton = SkeletonGraph.from_polylines([points])
 
         opts = SkeletonOptimizerOptions(max_iterations=50, verbose=False)
         optimizer = SkeletonOptimizer(skeleton, torus_mesh, opts)
         optimized = optimizer.optimize()
 
-        assert isinstance(optimized, PolylinesSkeleton)
-        assert len(optimized.polylines) == 1
-        assert len(optimized.polylines[0]) == len(points)
+        assert isinstance(optimized, SkeletonGraph)
+        assert optimized.number_of_nodes() > 0

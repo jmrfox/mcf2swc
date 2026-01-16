@@ -19,52 +19,16 @@ Key features:
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
 import trimesh
 
-from .polylines import PolylinesSkeleton
+from .skeleton import SkeletonGraph
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
-
-
-def _optimize_polyline_worker(
-    polyline: np.ndarray,
-    poly_idx: int,
-    mesh: trimesh.Trimesh,
-    options: SkeletonOptimizerOptions,
-) -> np.ndarray:
-    """
-    Worker function for parallel polyline optimization.
-
-    This function is defined at module level so it can be pickled for multiprocessing.
-
-    Args:
-        polyline: (N, 3) array of points
-        poly_idx: Index of this polyline for logging
-        mesh: Target mesh
-        options: Optimization options
-
-    Returns:
-        Optimized (N, 3) array of points
-    """
-    # Handle empty polylines
-    if len(polyline) == 0:
-        return polyline.copy()
-
-    # Create a temporary optimizer instance to use its methods
-    # We can't pickle the full optimizer, but we can create one in the worker
-    from .polylines import PolylinesSkeleton
-
-    temp_skeleton = PolylinesSkeleton([polyline])
-    temp_optimizer = SkeletonOptimizer(temp_skeleton, mesh, options)
-
-    # Optimize this single polyline
-    return temp_optimizer._optimize_polyline(polyline, poly_idx)
 
 
 @dataclass
@@ -80,23 +44,18 @@ class SkeletonOptimizerOptions:
             are more conservative. Default: 0.1
         convergence_threshold: Stop optimization when average point movement
             is below this threshold. Default: 1e-4
-        preserve_endpoints: If True, do not move the first and last points of
-            each polyline. Default: True
-        preserve_branch_points: If True, do not move branch points (where 3+
-            polylines meet). Requires topology detection. Default: False
-        branch_point_tolerance: Distance threshold for detecting branch points.
-            Default: 1e-6
+        preserve_terminal_nodes: If True, do not move terminal nodes (degree 1).
+            Default: True
+        preserve_branch_nodes: If True, do not move branch nodes (degree 3+).
+            Default: False
         n_rays: Number of evenly spaced rays to cast in 3D for distance sampling.
             Uses Fibonacci sphere algorithm for uniform distribution. If set to 6,
             uses axis-aligned rays (+/- x, y, z) for simpler debugging. Default: 6
         fallback_distance: Distance to use when ray tracing fails to find an
             intersection with the mesh. Default: 10.0
         smoothing_weight: Weight for smoothing regularization to maintain
-            polyline smoothness (0 = no smoothing, 1 = strong smoothing).
+            skeleton smoothness (0 = no smoothing, 1 = strong smoothing).
             Default: 0.5
-        n_jobs: Number of parallel processes to use for optimizing polylines.
-            If 1, run sequentially. If -1, use all available CPU cores.
-            Default: 1 (sequential)
         verbose: If True, print optimization progress. Default: False
     """
 
@@ -104,27 +63,26 @@ class SkeletonOptimizerOptions:
     max_iterations: int = 100
     step_size: float = 0.1
     convergence_threshold: float = 1e-4
-    preserve_endpoints: bool = True
-    preserve_branch_points: bool = False
-    branch_point_tolerance: float = 1e-6
+    preserve_terminal_nodes: bool = True
+    preserve_branch_nodes: bool = False
     n_rays: int = 6
     fallback_distance: float = 10.0
     smoothing_weight: float = 0.5
-    n_jobs: int = 1
     verbose: bool = False
 
 
 class SkeletonOptimizer:
     """
-    Optimizer for skeleton polylines to push points toward the mesh medial axis.
+    Optimizer for skeleton graphs to push nodes toward the mesh medial axis.
 
-    This class takes a skeleton (polylines format) produced by MCF skeletonization
-    and a mesh, then optimizes the skeleton points to better approximate the
+    This class takes a skeleton graph produced by MCF skeletonization
+    and a mesh, then optimizes the node positions to better approximate the
     medial axis of the mesh volume.
 
     Example:
-        >>> from mcf2swc import PolylinesSkeleton, MeshManager, SkeletonOptimizer
-        >>> skeleton = PolylinesSkeleton.from_txt("skeleton.polylines.txt")
+        >>> from mcf2swc.skeleton import SkeletonGraph
+        >>> from mcf2swc import MeshManager, SkeletonOptimizer
+        >>> skeleton = SkeletonGraph.from_txt("skeleton.polylines.txt")
         >>> mesh_mgr = MeshManager(mesh_path="mesh.obj")
         >>> optimizer = SkeletonOptimizer(skeleton, mesh_mgr.mesh)
         >>> optimized_skeleton = optimizer.optimize()
@@ -132,7 +90,7 @@ class SkeletonOptimizer:
 
     def __init__(
         self,
-        skeleton: PolylinesSkeleton,
+        skeleton: SkeletonGraph,
         mesh: trimesh.Trimesh,
         options: Optional[SkeletonOptimizerOptions] = None,
     ):
@@ -140,32 +98,31 @@ class SkeletonOptimizer:
         Initialize the skeleton optimizer.
 
         Args:
-            skeleton: Input skeleton polylines from MCF calculation
+            skeleton: Input skeleton graph from MCF calculation
             mesh: Target mesh that the skeleton should approximate
             options: Optimization configuration options
         """
-        self.skeleton = skeleton.copy()
+        self.skeleton = skeleton.copy_skeleton()
         self.mesh = mesh
         self.options = options or SkeletonOptimizerOptions()
 
         self._surface_crossing_detected = False
         self._optimization_history = []
-        self._branch_points = None  # Cache for branch point detection
 
     def check_surface_crossing(self) -> Tuple[bool, int, float]:
         """
-        Check if any skeleton points are outside the mesh surface.
+        Check if any skeleton nodes are outside the mesh surface.
 
         Returns:
-            Tuple of (has_crossing, num_outside_points, max_distance)
-            - has_crossing: True if any points are outside the mesh
-            - num_outside_points: Number of points outside the mesh
-            - max_distance: Maximum distance to surface for outside points
+            Tuple of (has_crossing, num_outside_nodes, max_distance)
+            - has_crossing: True if any nodes are outside the mesh
+            - num_outside_nodes: Number of nodes outside the mesh
+            - max_distance: Maximum distance to surface for outside nodes
         """
-        if not self.skeleton.polylines:
+        if self.skeleton.number_of_nodes() == 0:
             return False, 0, 0.0
 
-        all_pts = np.vstack(self.skeleton.polylines)
+        all_pts = self.skeleton.get_all_positions()
 
         try:
             inside_mask = self.mesh.contains(all_pts)
@@ -186,13 +143,13 @@ class SkeletonOptimizer:
             if self.options.verbose:
                 if has_crossing:
                     logger.info(
-                        "Surface crossing detected: %d/%d points outside mesh (max distance: %.4f)",
+                        "Surface crossing detected: %d/%d nodes outside mesh (max distance: %.4f)",
                         num_outside,
                         len(all_pts),
                         max_dist,
                     )
                 else:
-                    logger.info("No surface crossing detected - all points inside mesh")
+                    logger.info("No surface crossing detected - all nodes inside mesh")
 
             return has_crossing, num_outside, max_dist
 
@@ -200,175 +157,135 @@ class SkeletonOptimizer:
             logger.warning("Failed to check surface crossing: %s", e)
             return False, 0, 0.0
 
-    def optimize(self) -> PolylinesSkeleton:
+    def optimize(self) -> SkeletonGraph:
         """
-        Optimize the skeleton by pushing points toward the mesh medial axis.
+        Optimize the skeleton by pushing nodes toward the mesh medial axis.
 
         Returns:
-            Optimized skeleton polylines
+            Optimized skeleton graph
         """
         if self.options.check_surface_crossing:
             self.check_surface_crossing()
 
         if self.options.verbose:
             logger.info("Starting skeleton optimization...")
+            logger.info("  Nodes: %d", self.skeleton.number_of_nodes())
             logger.info("  Max iterations: %d", self.options.max_iterations)
             logger.info("  Step size: %.4f", self.options.step_size)
             logger.info("  Smoothing weight: %.4f", self.options.smoothing_weight)
-            logger.info("  Parallel jobs: %d", self.options.n_jobs)
 
-        # Determine number of workers
-        n_jobs = self.options.n_jobs
-        if n_jobs == -1:
-            import os
+        # Get node sets for preservation
+        terminal_nodes = (
+            self.skeleton.get_terminal_nodes()
+            if self.options.preserve_terminal_nodes
+            else set()
+        )
+        branch_nodes = (
+            self.skeleton.get_branch_nodes()
+            if self.options.preserve_branch_nodes
+            else set()
+        )
 
-            n_jobs = os.cpu_count() or 1
-
-        # Use parallel processing if n_jobs > 1 and we have multiple polylines
-        if n_jobs > 1 and len(self.skeleton.polylines) > 1:
-            optimized_polylines = self._optimize_parallel(n_jobs)
-        else:
-            optimized_polylines = self._optimize_sequential()
-
-        result = PolylinesSkeleton(optimized_polylines)
-
-        if self.options.verbose:
-            logger.info("Optimization complete")
-
-        return result
-
-    def _optimize_sequential(self) -> list:
-        """
-        Optimize polylines sequentially (original implementation).
-
-        Returns:
-            List of optimized polylines
-        """
-        optimized_polylines = []
-        for poly_idx, polyline in enumerate(self.skeleton.polylines):
-            if len(polyline) == 0:
-                optimized_polylines.append(polyline.copy())
-                continue
-
-            optimized = self._optimize_polyline(polyline, poly_idx)
-            optimized_polylines.append(optimized)
-
-        return optimized_polylines
-
-    def _optimize_parallel(self, n_jobs: int) -> list:
-        """
-        Optimize polylines in parallel using multiprocessing.
-
-        Args:
-            n_jobs: Number of parallel workers
-
-        Returns:
-            List of optimized polylines
-        """
-        if self.options.verbose:
-            logger.info("  Using %d parallel workers", n_jobs)
-
-        # Prepare tasks: (polyline_index, polyline_data)
-        tasks = []
-        for poly_idx, polyline in enumerate(self.skeleton.polylines):
-            tasks.append((poly_idx, polyline))
-
-        # Run optimization in parallel
-        optimized_polylines = [None] * len(tasks)
-
-        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-            # Submit all tasks
-            future_to_idx = {
-                executor.submit(
-                    _optimize_polyline_worker,
-                    polyline,
-                    poly_idx,
-                    self.mesh,
-                    self.options,
-                ): poly_idx
-                for poly_idx, polyline in tasks
-            }
-
-            # Collect results as they complete
-            for future in as_completed(future_to_idx):
-                poly_idx = future_to_idx[future]
-                try:
-                    optimized = future.result()
-                    optimized_polylines[poly_idx] = optimized
-                except Exception as exc:
-                    logger.error("Polyline %d optimization failed: %s", poly_idx, exc)
-                    # Fallback to original polyline
-                    optimized_polylines[poly_idx] = self.skeleton.polylines[
-                        poly_idx
-                    ].copy()
-
-        return optimized_polylines
-
-    def _optimize_polyline(self, polyline: np.ndarray, poly_idx: int) -> np.ndarray:
-        """
-        Optimize a single polyline.
-
-        Args:
-            polyline: (N, 3) array of points
-            poly_idx: Index of this polyline for logging
-
-        Returns:
-            Optimized (N, 3) array of points
-        """
-        points = polyline.copy()
-        n_points = len(points)
-
-        if n_points <= 1:
-            return points
-
-        # Detect branch points if needed
-        if self.options.preserve_branch_points:
-            if self._branch_points is None:
-                self._branch_points = self._detect_branch_points()
-
+        # Optimization loop
         for iteration in range(self.options.max_iterations):
-            points_old = points.copy()
+            # Store old positions
+            old_positions = self.skeleton.get_all_positions()
 
-            for i in range(n_points):
-                if self.options.preserve_endpoints and (i == 0 or i == n_points - 1):
+            # Optimize each node
+            for node in self.skeleton.nodes():
+                # Skip terminal nodes if preserve_terminal_nodes is True
+                if node in terminal_nodes:
                     continue
 
-                # Skip branch points if preserve_branch_points is True
-                if self.options.preserve_branch_points:
-                    if self._is_branch_point(poly_idx, i):
-                        continue
+                # Skip branch nodes if preserve_branch_nodes is True
+                if node in branch_nodes:
+                    continue
 
-                # Compute centering direction using uniform 3D ray sampling
-                direction = self._compute_centering_direction(points[i])
+                # Get current position
+                pos = self.skeleton.get_node_position(node)
 
+                # Compute centering direction
+                direction = self._compute_centering_direction(pos)
+
+                # Compute smoothing direction if needed
                 smoothing_direction = np.zeros(3)
-                if self.options.smoothing_weight > 0 and n_points > 2:
-                    smoothing_direction = self._compute_smoothing_direction(points, i)
+                if self.options.smoothing_weight > 0:
+                    smoothing_direction = self._compute_smoothing_direction_for_node(
+                        node
+                    )
 
+                # Combine directions
                 total_direction = (
                     1.0 - self.options.smoothing_weight
                 ) * direction + self.options.smoothing_weight * smoothing_direction
 
-                points[i] = points[i] + self.options.step_size * total_direction
+                # Update position
+                new_pos = pos + self.options.step_size * total_direction
+                self.skeleton.set_node_position(node, new_pos)
 
-            movement = np.linalg.norm(points - points_old, axis=1).mean()
+            # Check convergence
+            new_positions = self.skeleton.get_all_positions()
+            movement = np.linalg.norm(new_positions - old_positions, axis=1).mean()
 
             if self.options.verbose and iteration % 10 == 0:
-                logger.info(
-                    "  Polyline %d, iteration %d: avg movement = %.6f",
-                    poly_idx,
-                    iteration,
-                    movement,
-                )
+                logger.info("  Iteration %d: avg movement = %.6f", iteration, movement)
 
             if movement < self.options.convergence_threshold:
                 if self.options.verbose:
-                    logger.info(
-                        "  Polyline %d converged at iteration %d", poly_idx, iteration
-                    )
+                    logger.info("  Converged at iteration %d", iteration)
                 break
 
-        return points
+        # Update edge lengths after optimization
+        self._update_edge_lengths()
+
+        if self.options.verbose:
+            logger.info("Optimization complete")
+
+        return self.skeleton
+
+    def _update_edge_lengths(self) -> None:
+        """Update edge lengths after node positions have changed."""
+        for u, v in self.skeleton.edges():
+            pos_u = self.skeleton.get_node_position(u)
+            pos_v = self.skeleton.get_node_position(v)
+            length = float(np.linalg.norm(pos_v - pos_u))
+            self.skeleton.edges[u, v]["length"] = length
+
+    def _compute_smoothing_direction_for_node(self, node: int) -> np.ndarray:
+        """
+        Compute smoothing direction for a node based on its neighbors.
+
+        The smoothing direction pulls the node toward the average position
+        of its neighbors, helping maintain smooth skeleton structure.
+
+        Args:
+            node: Node ID
+
+        Returns:
+            (3,) array representing the smoothing direction (unit vector)
+        """
+        neighbors = list(self.skeleton.neighbors(node))
+
+        if len(neighbors) == 0:
+            return np.zeros(3)
+
+        # Get current position
+        pos = self.skeleton.get_node_position(node)
+
+        # Compute average neighbor position
+        neighbor_positions = np.array(
+            [self.skeleton.get_node_position(n) for n in neighbors]
+        )
+        avg_neighbor_pos = neighbor_positions.mean(axis=0)
+
+        # Direction toward average neighbor position
+        direction = avg_neighbor_pos - pos
+        norm = np.linalg.norm(direction)
+
+        if norm > 1e-10:
+            return direction / norm
+        else:
+            return np.zeros(3)
 
     def _compute_centering_direction(self, point: np.ndarray) -> np.ndarray:
         """
@@ -540,86 +457,6 @@ class SkeletonOptimizer:
             logger.warning("Ray tracing failed, using fallback distance: %s", e)
             return self.options.fallback_distance
 
-    def _compute_smoothing_direction(
-        self, points: np.ndarray, index: int
-    ) -> np.ndarray:
-        """
-        Compute smoothing direction using Laplacian smoothing.
-
-        Args:
-            points: (N, 3) array of all points in the polyline
-            index: Index of the current point
-
-        Returns:
-            (3,) array representing the smoothing direction
-        """
-        n = len(points)
-        if n <= 2:
-            return np.zeros(3)
-
-        if index == 0:
-            neighbor_avg = points[1]
-        elif index == n - 1:
-            neighbor_avg = points[n - 2]
-        else:
-            neighbor_avg = (points[index - 1] + points[index + 1]) / 2.0
-
-        direction = neighbor_avg - points[index]
-        norm = np.linalg.norm(direction)
-        if norm > 1e-10:
-            return direction / norm
-        return np.zeros(3)
-
-    def _detect_branch_points(self) -> set:
-        """
-        Detect branch points where 3+ polylines meet.
-
-        Returns:
-            Set of (polyline_idx, point_idx) tuples for branch points
-        """
-        branch_points = set()
-        tolerance = self.options.branch_point_tolerance
-
-        # Collect all endpoints (potential branch points)
-        all_points = []
-        for poly_idx, polyline in enumerate(self.skeleton.polylines):
-            if len(polyline) > 0:
-                all_points.append((poly_idx, 0, polyline[0]))  # First point
-                all_points.append(
-                    (poly_idx, len(polyline) - 1, polyline[-1])
-                )  # Last point
-
-        # Check for points that are close to each other
-        for i, (poly_i, idx_i, pt_i) in enumerate(all_points):
-            close_points = [(poly_i, idx_i)]
-            for j, (poly_j, idx_j, pt_j) in enumerate(all_points):
-                if i != j:
-                    dist = np.linalg.norm(pt_i - pt_j)
-                    if dist < tolerance:
-                        close_points.append((poly_j, idx_j))
-
-            # If 3+ points are close together, mark them as branch points
-            if len(close_points) >= 3:
-                for poly_idx, pt_idx in close_points:
-                    branch_points.add((poly_idx, pt_idx))
-
-        return branch_points
-
-    def _is_branch_point(self, poly_idx: int, point_idx: int) -> bool:
-        """
-        Check if a point is a branch point.
-
-        Args:
-            poly_idx: Index of the polyline
-            point_idx: Index of the point within the polyline
-
-        Returns:
-            True if the point is a branch point
-        """
-        if self._branch_points is None:
-            return False
-        return (poly_idx, point_idx) in self._branch_points
-
     def get_optimization_stats(self) -> dict:
         """
         Get statistics about the optimization process.
@@ -629,13 +466,16 @@ class SkeletonOptimizer:
         """
         stats = {
             "surface_crossing_detected": self._surface_crossing_detected,
-            "num_polylines": len(self.skeleton.polylines),
-            "total_points": self.skeleton.total_points(),
+            "num_nodes": self.skeleton.number_of_nodes(),
+            "num_edges": self.skeleton.number_of_edges(),
+            "num_terminal_nodes": len(self.skeleton.get_terminal_nodes()),
+            "num_branch_nodes": len(self.skeleton.get_branch_nodes()),
+            "total_length": self.skeleton.get_total_length(),
         }
 
         if self.options.check_surface_crossing:
             has_crossing, num_outside, max_dist = self.check_surface_crossing()
-            stats["points_outside_mesh"] = num_outside
+            stats["nodes_outside_mesh"] = num_outside
             stats["max_distance_outside"] = max_dist
 
         return stats

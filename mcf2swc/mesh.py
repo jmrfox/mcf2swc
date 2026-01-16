@@ -545,12 +545,10 @@ class MeshManager:
         width: int = 800,
         height: int = 600,
         *,
-        polylines: Optional[
-            Union["PolylinesSkeleton", List["PolylinesSkeleton"]]
-        ] = None,
-        poly_color: Union[str, List[str]] = "crimson",
-        poly_line_width: float = 3.0,
-        poly_opacity: float = 0.95,
+        skel: Optional[Union["SkeletonGraph", List["SkeletonGraph"]]] = None,
+        skel_color: Union[str, List[str]] = "crimson",
+        skel_line_width: float = 3.0,
+        skel_opacity: float = 0.95,
     ) -> Optional[object]:
         """
         Create a 3D visualization of a mesh.
@@ -561,10 +559,10 @@ class MeshManager:
             backend: Visualization backend ('plotly' or 'matplotlib')
             show_axes: Whether to show coordinate axes
             show_wireframe: Whether to show wireframe overlay
-            polylines: Optional PolylinesSkeleton or list of PolylinesSkeleton to overlay as 3D lines
-            poly_color: Color(s) for polylines overlay. Can be a single color or list of colors (one per skeleton)
-            poly_line_width: Line width for polylines overlay
-            poly_opacity: Opacity for polylines overlay (plotly only)
+            skel: Optional SkeletonGraph or list of SkeletonGraph to overlay as 3D lines
+            skel_color: Color(s) for skeleton overlay. Can be a single color or list of colors (one per skeleton)
+            skel_line_width: Line width for skeleton overlay
+            skel_opacity: Opacity for skeleton overlay (plotly only)
 
         Returns:
             Figure object (backend-dependent) or None if visualization fails
@@ -591,10 +589,10 @@ class MeshManager:
                 show_wireframe,
                 width,
                 height,
-                polylines=polylines,
-                poly_color=poly_color,
-                poly_line_width=poly_line_width,
-                poly_opacity=poly_opacity,
+                skel=skel,
+                skel_color=skel_color,
+                skel_line_width=skel_line_width,
+                skel_opacity=skel_opacity,
             )
         elif backend == "matplotlib":
             return self._visualize_mesh_matplotlib(
@@ -602,9 +600,9 @@ class MeshManager:
                 color,
                 show_axes,
                 show_wireframe,
-                polylines=polylines,
-                poly_color=poly_color,
-                poly_line_width=poly_line_width,
+                skel=skel,
+                skel_color=skel_color,
+                skel_line_width=skel_line_width,
             )
         else:
             raise ValueError(f"Unknown backend: {backend}")
@@ -618,14 +616,12 @@ class MeshManager:
         width=800,
         height=600,
         *,
-        polylines: Optional[
-            Union["PolylinesSkeleton", List["PolylinesSkeleton"]]
-        ] = None,
-        poly_color: Union[str, List[str]] = "crimson",
-        poly_line_width: float = 3.0,
-        poly_opacity: float = 0.95,
+        skel: Optional[Union["SkeletonGraph", List["SkeletonGraph"]]] = None,
+        skel_color: Union[str, List[str]] = "crimson",
+        skel_line_width: float = 3.0,
+        skel_opacity: float = 0.95,
     ):
-        """Plotly-based mesh visualization with optional polylines overlay."""
+        """Plotly-based mesh visualization with optional SkeletonGraph overlay."""
         try:
             import plotly.graph_objects as go
 
@@ -669,48 +665,60 @@ class MeshManager:
                     )
                 )
 
-            # Add polylines overlay if provided
-            if polylines is not None:
-                # Normalize to list of PolylinesSkeleton
-                if hasattr(polylines, "polylines"):
-                    polylines_list = [polylines]
+            # Add skeleton overlay if provided
+            if skel is not None:
+                # Normalize to list
+                if isinstance(skel, (list, tuple)):
+                    skel_list = skel
                 else:
-                    polylines_list = polylines
+                    skel_list = [skel]
 
                 # Normalize colors to list
-                if isinstance(poly_color, str):
-                    colors = [poly_color] * len(polylines_list)
+                if isinstance(skel_color, str):
+                    colors = [skel_color] * len(skel_list)
                 else:
-                    colors = poly_color
-                    if len(colors) < len(polylines_list):
+                    colors = skel_color
+                    if len(colors) < len(skel_list):
                         colors = list(colors) + [colors[-1]] * (
-                            len(polylines_list) - len(colors)
+                            len(skel_list) - len(colors)
                         )
 
                 # Add each skeleton
-                for skel_idx, skeleton in enumerate(polylines_list):
-                    if skeleton is None or not hasattr(skeleton, "polylines"):
+                for skel_idx, skeleton in enumerate(skel_list):
+                    if skeleton is None:
                         continue
-                    skel_color = colors[skel_idx]
-                    for idx, pl in enumerate(skeleton.polylines):
-                        if pl is None:
-                            continue
-                        pts = np.asarray(pl, dtype=float)
-                        if pts.ndim == 2 and pts.shape[1] >= 3 and pts.shape[0] >= 2:
-                            fig.add_trace(
-                                go.Scatter3d(
-                                    x=pts[:, 0],
-                                    y=pts[:, 1],
-                                    z=pts[:, 2],
-                                    mode="lines",
-                                    line=dict(
-                                        color=skel_color, width=float(poly_line_width)
-                                    ),
-                                    opacity=float(poly_opacity),
-                                    name=f"Skeleton {skel_idx}, Polyline {idx}",
-                                    showlegend=False,
-                                )
+
+                    # Draw edges directly from the graph
+                    color = colors[skel_idx]
+
+                    # Collect all edge segments for this skeleton
+                    edge_x = []
+                    edge_y = []
+                    edge_z = []
+
+                    for u, v in skeleton.edges():
+                        pos_u = skeleton.get_node_position(u)
+                        pos_v = skeleton.get_node_position(v)
+
+                        # Add edge as a line segment (with None separator for discontinuous lines)
+                        edge_x.extend([pos_u[0], pos_v[0], None])
+                        edge_y.extend([pos_u[1], pos_v[1], None])
+                        edge_z.extend([pos_u[2], pos_v[2], None])
+
+                    # Add all edges as a single trace
+                    if edge_x:
+                        fig.add_trace(
+                            go.Scatter3d(
+                                x=edge_x,
+                                y=edge_y,
+                                z=edge_z,
+                                mode="lines",
+                                line=dict(color=color, width=float(skel_line_width)),
+                                opacity=float(skel_opacity),
+                                name=f"Skeleton {skel_idx}",
+                                showlegend=False,
                             )
+                        )
 
             # Configure layout
             fig.update_layout(
@@ -742,13 +750,11 @@ class MeshManager:
         show_axes,
         show_wireframe,
         *,
-        polylines: Optional[
-            Union["PolylinesSkeleton", List["PolylinesSkeleton"]]
-        ] = None,
-        poly_color: Union[str, List[str]] = "crimson",
-        poly_line_width: float = 3.0,
+        skel: Optional[Union["SkeletonGraph", List["SkeletonGraph"]]] = None,
+        skel_color: Union[str, List[str]] = "crimson",
+        skel_line_width: float = 3.0,
     ):
-        """Matplotlib-based mesh visualization with optional polylines overlay."""
+        """Matplotlib-based mesh visualization with optional SkeletonGraph overlay."""
         try:
             import matplotlib.pyplot as plt
             from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -768,41 +774,44 @@ class MeshManager:
             )
             ax.add_collection3d(poly3d)
 
-            # Add polylines overlay if provided
-            if polylines is not None:
-                # Normalize to list of PolylinesSkeleton
-                if hasattr(polylines, "polylines"):
-                    polylines_list = [polylines]
+            # Add skeleton overlay if provided
+            if skel is not None:
+                # Normalize to list
+                if isinstance(skel, (list, tuple)):
+                    skel_list = skel
                 else:
-                    polylines_list = polylines
+                    skel_list = [skel]
 
                 # Normalize colors to list
-                if isinstance(poly_color, str):
-                    colors = [poly_color] * len(polylines_list)
+                if isinstance(skel_color, str):
+                    colors = [skel_color] * len(skel_list)
                 else:
-                    colors = poly_color
-                    if len(colors) < len(polylines_list):
+                    colors = skel_color
+                    if len(colors) < len(skel_list):
                         colors = list(colors) + [colors[-1]] * (
-                            len(polylines_list) - len(colors)
+                            len(skel_list) - len(colors)
                         )
 
                 # Add each skeleton
-                for skel_idx, skeleton in enumerate(polylines_list):
-                    if skeleton is None or not hasattr(skeleton, "polylines"):
+                for skel_idx, skeleton in enumerate(skel_list):
+                    if skeleton is None:
                         continue
-                    skel_color = colors[skel_idx]
-                    for pl in skeleton.polylines:
-                        if pl is None:
-                            continue
-                        pts = np.asarray(pl, dtype=float)
-                        if pts.ndim == 2 and pts.shape[1] >= 3 and pts.shape[0] >= 2:
-                            ax.plot(
-                                pts[:, 0],
-                                pts[:, 1],
-                                pts[:, 2],
-                                color=skel_color,
-                                linewidth=float(poly_line_width),
-                            )
+
+                    # Draw edges directly from the graph
+                    color = colors[skel_idx]
+
+                    for u, v in skeleton.edges():
+                        pos_u = skeleton.get_node_position(u)
+                        pos_v = skeleton.get_node_position(v)
+
+                        # Draw edge as a line segment
+                        ax.plot(
+                            [pos_u[0], pos_v[0]],
+                            [pos_u[1], pos_v[1]],
+                            [pos_u[2], pos_v[2]],
+                            color=color,
+                            linewidth=float(skel_line_width),
+                        )
 
             ax.set_xlim(vertices[:, 0].min(), vertices[:, 0].max())
             ax.set_ylim(vertices[:, 1].min(), vertices[:, 1].max())

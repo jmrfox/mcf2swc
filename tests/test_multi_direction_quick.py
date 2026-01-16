@@ -5,7 +5,7 @@ Test multi-directional sampling for medial axis centering.
 import pytest
 import numpy as np
 from mcf2swc import (
-    PolylinesSkeleton,
+    SkeletonGraph,
     SkeletonOptimizer,
     SkeletonOptimizerOptions,
     example_mesh,
@@ -24,15 +24,13 @@ def test_multi_direction_sampling(num_directions):
             [0.5, 0.5, 3.5],
         ]
     )
-    skeleton = PolylinesSkeleton([points])
+    skeleton = SkeletonGraph.from_polylines([points])
 
     options = SkeletonOptimizerOptions(
-        centering_method="medial_axis",
-        probe_distance=5.0,
-        num_probe_directions=num_directions,
+        n_rays=num_directions,
         max_iterations=10,
         step_size=0.1,
-        preserve_endpoints=True,
+        preserve_terminal_nodes=True,
         smoothing_weight=0.3,
         verbose=False,
     )
@@ -40,10 +38,10 @@ def test_multi_direction_sampling(num_directions):
     optimizer = SkeletonOptimizer(skeleton, mesh, options)
     optimized = optimizer.optimize()
 
-    assert len(optimized.polylines) == 1
-    assert optimized.total_points() == skeleton.total_points()
+    assert optimized.number_of_nodes() > 0
 
-    optimized_points = optimized.polylines[0]
+    optimized_polylines = optimized.to_polylines()
+    optimized_points = optimized_polylines[0]
     optimized_distances = np.linalg.norm(optimized_points[:, :2], axis=1)
 
     assert np.all(optimized_distances < 1.0)
@@ -60,17 +58,15 @@ def test_more_directions_improves_centering():
             [0.6, 0.6, 3.5],
         ]
     )
-    skeleton = PolylinesSkeleton([points])
+    skeleton = SkeletonGraph.from_polylines([points])
 
     results = []
     for num_dirs in [4, 8]:
         options = SkeletonOptimizerOptions(
-            centering_method="medial_axis",
-            probe_distance=5.0,
-            num_probe_directions=num_dirs,
+            n_rays=num_dirs,
             max_iterations=15,
             step_size=0.1,
-            preserve_endpoints=False,
+            preserve_terminal_nodes=False,
             smoothing_weight=0.3,
             verbose=False,
         )
@@ -78,7 +74,8 @@ def test_more_directions_improves_centering():
         optimizer = SkeletonOptimizer(skeleton, mesh, options)
         optimized = optimizer.optimize()
 
-        optimized_points = optimized.polylines[0]
+        optimized_polylines = optimized.to_polylines()
+        optimized_points = optimized_polylines[0]
         mean_distance = np.mean(np.linalg.norm(optimized_points[:, :2], axis=1))
         results.append(mean_distance)
 

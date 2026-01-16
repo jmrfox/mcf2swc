@@ -7,7 +7,7 @@ from mcf2swc import (
     example_mesh,
     fit_morphology,
     FitOptions,
-    PolylinesSkeleton,
+    SkeletonGraph,
     SWCModel,
 )
 
@@ -19,10 +19,10 @@ DATA = ROOT / "data" / "demo"
 def test_swc_save_reload_preserves_edges():
     """Test that saving and reloading an SWC model preserves edges."""
     mesh = example_mesh("cylinder")
-    pls = PolylinesSkeleton.from_txt(str(DATA / "cylinder.polylines.txt"))
+    skel = SkeletonGraph.from_txt(str(DATA / "cylinder.polylines.txt"))
 
     opts = FitOptions(spacing=1.0, radius_strategy="equivalent_area")
-    morph_graph = fit_morphology(mesh, pls, options=opts)
+    morph_graph = fit_morphology(mesh, skel, options=opts)
 
     assert morph_graph.number_of_nodes() > 0, "Original graph has no nodes"
     assert morph_graph.number_of_edges() > 0, "Original graph has no edges"

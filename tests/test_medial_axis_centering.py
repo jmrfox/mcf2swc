@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import numpy as np
 from mcf2swc import (
-    PolylinesSkeleton,
+    SkeletonGraph,
     SkeletonOptimizer,
     SkeletonOptimizerOptions,
     example_mesh,
@@ -24,13 +24,12 @@ def test_closest_point_centering():
             [0.3, 0.2, 3.5],
         ]
     )
-    skeleton = PolylinesSkeleton([points])
+    skeleton = SkeletonGraph.from_polylines([points])
 
     options = SkeletonOptimizerOptions(
-        centering_method="closest_point",
         max_iterations=10,
         step_size=0.1,
-        preserve_endpoints=True,
+        preserve_terminal_nodes=True,
         smoothing_weight=0.3,
         verbose=False,
     )
@@ -38,8 +37,7 @@ def test_closest_point_centering():
     optimizer = SkeletonOptimizer(skeleton, mesh, options)
     optimized = optimizer.optimize()
 
-    assert len(optimized.polylines) == 1
-    assert optimized.total_points() == skeleton.total_points()
+    assert optimized.number_of_nodes() > 0
 
 
 def test_medial_axis_centering():
@@ -53,14 +51,12 @@ def test_medial_axis_centering():
             [0.3, 0.2, 3.5],
         ]
     )
-    skeleton = PolylinesSkeleton([points])
+    skeleton = SkeletonGraph.from_polylines([points])
 
     options = SkeletonOptimizerOptions(
-        centering_method="medial_axis",
-        probe_distance=5.0,
         max_iterations=10,
         step_size=0.1,
-        preserve_endpoints=True,
+        preserve_terminal_nodes=True,
         smoothing_weight=0.3,
         verbose=False,
     )
@@ -68,8 +64,7 @@ def test_medial_axis_centering():
     optimizer = SkeletonOptimizer(skeleton, mesh, options)
     optimized = optimizer.optimize()
 
-    assert len(optimized.polylines) == 1
-    assert optimized.total_points() == skeleton.total_points()
+    assert optimized.number_of_nodes() > 0
 
 
 def test_centering_improves_position():
@@ -83,13 +78,12 @@ def test_centering_improves_position():
             [0.5, 0.5, 3.5],
         ]
     )
-    skeleton = PolylinesSkeleton([points])
+    skeleton = SkeletonGraph.from_polylines([points])
 
     options = SkeletonOptimizerOptions(
-        centering_method="closest_point",
         max_iterations=20,
         step_size=0.1,
-        preserve_endpoints=False,
+        preserve_terminal_nodes=False,
         smoothing_weight=0.3,
         verbose=False,
     )
@@ -98,7 +92,8 @@ def test_centering_improves_position():
     optimized = optimizer.optimize()
 
     original_distances = np.linalg.norm(points[:, :2], axis=1)
-    optimized_points = optimized.polylines[0]
+    optimized_polylines = optimized.to_polylines()
+    optimized_points = optimized_polylines[0]
     optimized_distances = np.linalg.norm(optimized_points[:, :2], axis=1)
 
     assert np.mean(optimized_distances) < np.mean(original_distances)

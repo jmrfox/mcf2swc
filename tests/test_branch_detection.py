@@ -5,7 +5,7 @@ Test branch point detection on TS2 skeleton.
 from pathlib import Path
 import pytest
 import numpy as np
-from mcf2swc import PolylinesSkeleton
+from mcf2swc import SkeletonGraph
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,7 +18,7 @@ def ts2_skeleton():
     skeleton_path = DATA / "TS2_qst0.6_mcst5.polylines.txt"
     if not skeleton_path.exists():
         pytest.skip(f"TS2 skeleton not found at {skeleton_path}")
-    return PolylinesSkeleton.from_txt(str(skeleton_path))
+    return SkeletonGraph.from_txt(str(skeleton_path))
 
 
 def test_branch_detection_basic(ts2_skeleton):
@@ -55,7 +55,7 @@ def test_build_graph(ts2_skeleton):
     for node, data in graph.nodes(data=True):
         assert "type" in data
         assert "pos" in data
-        assert data["type"] in ["branch", "endpoint"]
+        assert data["type"] in ["branch", "endpoint", "continuation"]
 
 
 def test_graph_topology_consistency(ts2_skeleton):
@@ -68,7 +68,7 @@ def test_graph_topology_consistency(ts2_skeleton):
     for node, data in graph.nodes(data=True):
         assert "type" in data
         assert "pos" in data
-        assert data["type"] in ["branch", "endpoint"]
+        assert data["type"] in ["branch", "endpoint", "continuation"]
         assert isinstance(data["pos"], (list, tuple, np.ndarray))
         assert len(data["pos"]) == 3
 
@@ -81,8 +81,4 @@ def test_convenience_methods(ts2_skeleton):
     assert isinstance(branch_indices, (list, set))
     assert isinstance(endpoint_indices, (list, set))
 
-    total_polyline_endpoints = sum(
-        2 if len(pl) > 1 else 1 for pl in ts2_skeleton.polylines
-    )
-
-    assert len(branch_indices) + len(endpoint_indices) <= total_polyline_endpoints * 2
+    assert len(branch_indices) + len(endpoint_indices) <= ts2_skeleton.number_of_nodes()

@@ -1,16 +1,16 @@
 """
 mcf2swc
 
-A lightweight toolkit for converting mesh cross-sections and skeleton polyline guidance
+A lightweight toolkit for converting mesh cross-sections and skeleton graph guidance
 into SWC models.
 
 Terminology:
-- "skeleton": The mesh centroid (polylines format, result of MCF calculation) without radii
+- "skeleton": The mesh centroid (SkeletonGraph, result of MCF calculation) without radii
 - "SWC model" or "swc": Skeleton with radii information attached to each node
 
 Public API:
 - MeshManager
-- PolylinesSkeleton
+- SkeletonGraph
 - SWCModel (from swctools)
 - MorphologyGraph
 - FitOptions, fit_morphology
@@ -34,7 +34,7 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 from swctools import SWCModel  # noqa: E402
 
 from .mesh import MeshManager, example_mesh  # noqa: E402
-from .polylines import PolylinesSkeleton  # noqa: E402
+from .skeleton import SkeletonGraph  # noqa: E402
 from .graph_fitting import (  # noqa: E402
     FitOptions,
     fit_morphology,
@@ -43,15 +43,6 @@ from .morphology_graph import (  # noqa: E402
     MorphologyGraph,
     Junction,
 )
-from .radius_optimizer import (  # noqa: E402
-    OptimizerOptions,
-    RadiusOptimizer,
-    optimize_skeleton_radii,
-)
-from .radius_optimizer_local import (  # noqa: E402
-    LocalOptimizerOptions,
-    LocalRadiusOptimizer,
-)
 from .skeleton_optimizer import (  # noqa: E402
     SkeletonOptimizer,
     SkeletonOptimizerOptions,
@@ -59,10 +50,10 @@ from .skeleton_optimizer import (  # noqa: E402
 
 __all__ = [
     "__version__",
-    # Mesh and polylines
+    # Mesh and skeleton
     "MeshManager",
     "example_mesh",
-    "PolylinesSkeleton",
+    "SkeletonGraph",
     # SWC model (from swctools)
     "SWCModel",
     # Tracing API
@@ -70,12 +61,6 @@ __all__ = [
     "fit_morphology",
     "MorphologyGraph",
     "Junction",
-    # Radius optimization
-    "OptimizerOptions",
-    "RadiusOptimizer",
-    "optimize_skeleton_radii",
-    "LocalOptimizerOptions",
-    "LocalRadiusOptimizer",
     # Skeleton optimization
     "SkeletonOptimizer",
     "SkeletonOptimizerOptions",
