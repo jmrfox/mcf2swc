@@ -99,8 +99,8 @@ __pypackages__/
 celerybeat-schedule
 celerybeat.pid
 
-# SageMath parsed files
-*.sage.py
+# uv
+uv.lock
 
 # Environments
 .env
@@ -141,6 +141,8 @@ cython_debug/
 *.swp
 *.swo
 *~
+.windsurf
+
 
 # OS
 .DS_Store
